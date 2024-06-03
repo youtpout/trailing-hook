@@ -34,14 +34,16 @@ contract TrailingHook is BaseHook {
         uint256 totalAmount;
     }
 
-    mapping(PoolId => mapping(uint256 => uint32[])) lastActivation;
+    mapping(PoolId => mapping(uint256 => uint32[])) lastActivationByPercent;
+    mapping(PoolId => uint32) lastActivation;
+    mapping(PoolId => bool) active;
+
     mapping(PoolId => int24) public tickLowerLasts;
 
     mapping(PoolId => mapping(uint256 => Trailing)) trailingUsers;
 
-    mapping(PoolId => mapping(uint256 => TrailingInfo))
-        public trailingByPercent;
-    mapping(PoolId => mapping(uint256 => TrailingInfo)) public trailingByTicks;
+    mapping(PoolId => mapping(uint32 => TrailingInfo)) public trailingByPercent;
+    mapping(PoolId => mapping(int24 => TrailingInfo)) public trailingByTicks;
 
     constructor(IPoolManager _poolManager) BaseHook(_poolManager) {}
 
@@ -129,6 +131,9 @@ contract TrailingHook is BaseHook {
             msg.sender,
             amount
         );
+
+        lastActivation[poolId] = uint32(block.timestamp);
+        trailingByPercent[poolId][percentStop].totalAmount += amount;
 
         setTickLowerLast(poolId, tickLower);
     }
