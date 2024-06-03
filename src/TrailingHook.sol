@@ -18,21 +18,17 @@ contract TrailingHook is BaseHook {
     // state variables should typically be unique to a pool
     // a single hook contract should be able to service multiple pools
     // ---------------------------------------------------------------
-
-    struct Trailing {
-        int24 startTick;
-        bool isCurrency1;
-        uint32 percent;
-        address owner;
-        uint256 amount;
-    }
-
     struct TrailingInfo {
         int24 startTick;
         bool isCurrency1;
         uint32 percent;
         uint256 totalAmount;
+        uint256 filledAmount;
+        mapping(address => uint256) userAmount;
     }
+
+    mapping(uint256 => TrailingInfo) listTrailings;
+    uint256 lastTrailing = 1;
 
     mapping(PoolId => mapping(uint256 => uint32[])) lastActivationByPercent;
     mapping(PoolId => uint32) lastActivation;
@@ -40,10 +36,10 @@ contract TrailingHook is BaseHook {
 
     mapping(PoolId => int24) public tickLowerLasts;
 
-    mapping(PoolId => mapping(uint256 => Trailing)) trailingUsers;
+    mapping(PoolId => mapping(uint32 => uint256)) public trailingByPercentId0;
+    mapping(PoolId => mapping(uint32 => uint256)) public trailingByPercentId1;
 
-    mapping(PoolId => mapping(uint32 => TrailingInfo)) public trailingByPercent;
-    mapping(PoolId => mapping(int24 => TrailingInfo)) public trailingByTicks;
+    mapping(PoolId => mapping(int24 => uint256)) public trailingByTicksId;
 
     constructor(IPoolManager _poolManager) BaseHook(_poolManager) {}
 
@@ -124,16 +120,25 @@ contract TrailingHook is BaseHook {
         uint32 percentStop
     ) public {
         (, int24 tickLower, , ) = StateLibrary.getSlot0(poolManager, poolId);
-        Trailing memory data = Trailing(
-            tickLower,
-            isCurrency1,
-            percentStop,
-            msg.sender,
-            amount
-        );
-
+        uint256 lastId = isCurrency1
+            ? trailingByPercentId1[poolId][percentStop]
+            : trailingByPercentId0[poolId][percentStop];
+        if (lastId > 0) {
+            TrailingInfo storage data = listTrailings[lastId];
+            if (data.filledAmount == 0) {
+                data.startTick = tickLower;
+                data.totalAmount += amount;
+                data.userAmount[msg.sender] += amount;
+            } else {
+                lastTrailing++;
+                data.startTick = tickLower;
+                data.isCurrency1 = isCurrency1;
+                data.percent = percentStop;
+                data.totalAmount += amount;
+                data.userAmount[msg.sender] += amount;
+            }
+        }
         lastActivation[poolId] = uint32(block.timestamp);
-        trailingByPercent[poolId][percentStop].totalAmount += amount;
 
         setTickLowerLast(poolId, tickLower);
     }
