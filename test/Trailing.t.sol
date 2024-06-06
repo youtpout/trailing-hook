@@ -20,7 +20,7 @@ contract TrailingTest is Test, Deployers {
     using CurrencyLibrary for Currency;
 
     TrailingHook trailing;
-    PoolId poolId;    
+    PoolId poolId;
     int24 constant MAX_TICK_SPACING = 32767;
 
     function setUp() public {
@@ -49,36 +49,43 @@ contract TrailingTest is Test, Deployers {
             "TrailingTest: hook address mismatch"
         );
 
-        int24 maxTickSpacing = manager.MAX_TICK_SPACING();
         // Create the pool
         key = PoolKey(
             currency0,
             currency1,
             3000,
-            maxTickSpacing,
+            MAX_TICK_SPACING,
             IHooks(address(trailing))
         );
         poolId = key.toId();
         manager.initialize(key, SQRT_PRICE_1_1, ZERO_BYTES);
 
-        return;
-
         // Provide liquidity to the pool
         modifyLiquidityRouter.modifyLiquidity(
             key,
-            IPoolManager.ModifyLiquidityParams(-60, 60, 10 ether, 0),
-            ZERO_BYTES
-        );
-        modifyLiquidityRouter.modifyLiquidity(
-            key,
-            IPoolManager.ModifyLiquidityParams(-120, 120, 10 ether, 0),
+            IPoolManager.ModifyLiquidityParams(
+                -MAX_TICK_SPACING,
+                MAX_TICK_SPACING,
+                10 ether,
+                0
+            ),
             ZERO_BYTES
         );
         modifyLiquidityRouter.modifyLiquidity(
             key,
             IPoolManager.ModifyLiquidityParams(
-                TickMath.minUsableTick(60),
-                TickMath.maxUsableTick(60),
+                -2 * MAX_TICK_SPACING,
+                2 * MAX_TICK_SPACING,
+                10 ether,
+                0
+            ),
+            ZERO_BYTES
+        );
+        modifyLiquidityRouter.modifyLiquidity(
+            key,
+            IPoolManager.ModifyLiquidityParams(
+                TickMath.minUsableTick(MAX_TICK_SPACING),
+                TickMath.maxUsableTick(MAX_TICK_SPACING),
                 10 ether,
                 0
             ),
@@ -106,7 +113,12 @@ contract TrailingTest is Test, Deployers {
         int256 liquidityDelta = -1e18;
         modifyLiquidityRouter.modifyLiquidity(
             key,
-            IPoolManager.ModifyLiquidityParams(-60, 60, liquidityDelta, 0),
+            IPoolManager.ModifyLiquidityParams(
+                -MAX_TICK_SPACING,
+                MAX_TICK_SPACING,
+                liquidityDelta,
+                0
+            ),
             ZERO_BYTES
         );
     }
