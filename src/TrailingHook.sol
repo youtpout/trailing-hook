@@ -2,6 +2,7 @@
 pragma solidity ^0.8.24;
 
 import {BaseHook} from "v4-periphery/BaseHook.sol";
+import {GeomeanOracle} from "./GeomeanOracle.sol";
 
 import {Hooks} from "v4-core/src/libraries/Hooks.sol";
 import {IPoolManager} from "v4-core/src/interfaces/IPoolManager.sol";
@@ -11,7 +12,10 @@ import {BalanceDelta} from "v4-core/src/types/BalanceDelta.sol";
 import {BeforeSwapDelta, BeforeSwapDeltaLibrary} from "v4-core/src/types/BeforeSwapDelta.sol";
 import {StateLibrary} from "v4-core/src/libraries/StateLibrary.sol";
 
-contract TrailingHook is BaseHook {
+/// @notice This hook can execute trialing stop orders between 1 and 10%, with a step of 1.
+/// Larger values limit the interest of such a hook and avoid having to manage too many data, which would be gas-consuming.
+/// It is based on the geoman oracle, making it easier to track price variations over time and more difficult to manipulate.
+contract TrailingHook is GeomeanOracle {
     using PoolIdLibrary for PoolKey;
 
     // NOTE: ---------------------------------------------------------
@@ -24,6 +28,7 @@ contract TrailingHook is BaseHook {
         uint32 percent;
         uint256 totalAmount;
         uint256 filledAmount;
+        uint256 newId;
         mapping(address => uint256) userAmount;
     }
 
@@ -32,6 +37,7 @@ contract TrailingHook is BaseHook {
 
     mapping(PoolId => mapping(uint256 => uint32[])) lastActivationByPercent;
     mapping(PoolId => uint32) lastActivation;
+    mapping(PoolId => uint32) nbOpenedTrailing;
     mapping(PoolId => bool) active;
 
     mapping(PoolId => int24) public tickLowerLasts;
@@ -41,7 +47,7 @@ contract TrailingHook is BaseHook {
 
     mapping(PoolId => mapping(int24 => uint256)) public trailingByTicksId;
 
-    constructor(IPoolManager _poolManager) BaseHook(_poolManager) {}
+    constructor(IPoolManager _poolManager) GeomeanOracle(_poolManager) {}
 
     function getHookPermissions()
         public
@@ -51,11 +57,11 @@ contract TrailingHook is BaseHook {
     {
         return
             Hooks.Permissions({
-                beforeInitialize: false,
-                afterInitialize: false,
+                beforeInitialize: true,
+                afterInitialize: true,
                 beforeAddLiquidity: true,
-                afterAddLiquidity: false,
                 beforeRemoveLiquidity: true,
+                afterAddLiquidity: false,
                 afterRemoveLiquidity: false,
                 beforeSwap: true,
                 afterSwap: true,
@@ -68,23 +74,6 @@ contract TrailingHook is BaseHook {
             });
     }
 
-    // -----------------------------------------------
-    // NOTE: see IHooks.sol for function documentation
-    // -----------------------------------------------
-
-    function beforeSwap(
-        address,
-        PoolKey calldata key,
-        IPoolManager.SwapParams calldata,
-        bytes calldata
-    ) external override returns (bytes4, BeforeSwapDelta, uint24) {
-        return (
-            BaseHook.beforeSwap.selector,
-            BeforeSwapDeltaLibrary.ZERO_DELTA,
-            0
-        );
-    }
-
     function afterSwap(
         address,
         PoolKey calldata key,
@@ -93,24 +82,6 @@ contract TrailingHook is BaseHook {
         bytes calldata
     ) external override returns (bytes4, int128) {
         return (BaseHook.afterSwap.selector, 0);
-    }
-
-    function beforeAddLiquidity(
-        address,
-        PoolKey calldata key,
-        IPoolManager.ModifyLiquidityParams calldata,
-        bytes calldata
-    ) external override returns (bytes4) {
-        return BaseHook.beforeAddLiquidity.selector;
-    }
-
-    function beforeRemoveLiquidity(
-        address,
-        PoolKey calldata key,
-        IPoolManager.ModifyLiquidityParams calldata,
-        bytes calldata
-    ) external override returns (bytes4) {
-        return BaseHook.beforeRemoveLiquidity.selector;
     }
 
     function addTrailing(
@@ -125,11 +96,13 @@ contract TrailingHook is BaseHook {
             : trailingByPercentId0[poolId][percentStop];
         if (lastId > 0) {
             TrailingInfo storage data = listTrailings[lastId];
-            if (data.filledAmount == 0) {
+            if (data.filledAmount == 0 && data.startTick <= tickLower) {
+                // we merge data only if the price is more or the same
                 data.startTick = tickLower;
                 data.totalAmount += amount;
                 data.userAmount[msg.sender] += amount;
             } else {
+                // else we create a new trailing
                 lastTrailing++;
                 data.startTick = tickLower;
                 data.isCurrency1 = isCurrency1;
