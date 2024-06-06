@@ -74,6 +74,19 @@ contract TrailingHook is GeomeanOracle {
             });
     }
 
+        function beforeInitialize(
+        address,
+        PoolKey calldata key,
+        uint160,
+        bytes calldata
+    ) external view override virtual poolManagerOnly returns (bytes4) {
+        // just check tick spacing, this pool can have fees
+        if ( key.tickSpacing != poolManager.MAX_TICK_SPACING())
+            revert OnlyOneOraclePoolAllowed();
+        return GeomeanOracle.beforeInitialize.selector;
+    }
+
+
     function afterSwap(
         address,
         PoolKey calldata key,

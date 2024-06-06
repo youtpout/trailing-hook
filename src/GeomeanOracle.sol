@@ -97,7 +97,7 @@ contract GeomeanOracle is BaseHook {
         PoolKey calldata key,
         uint160,
         bytes calldata
-    ) external view override poolManagerOnly returns (bytes4) {
+    ) external view override virtual poolManagerOnly returns (bytes4) {
         // This is to limit the fragmentation of pools using this oracle hook. In other words,
         // there may only be one pool per pair of tokens that use this hook. The tick spacing is set to the maximum
         // because we only allow max range liquidity in this pool.
