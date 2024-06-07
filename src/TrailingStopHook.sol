@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-import {ERC1155} from "solmate/tokens/ERC1155.sol";
 import {IERC20} from "forge-std/interfaces/IERC20.sol";
 import {Hooks} from "v4-core/src/libraries/Hooks.sol";
 import {BaseHook} from "v4-periphery/BaseHook.sol";
@@ -14,9 +13,13 @@ import {UniV4UserHook} from "./UniV4UserHook.sol";
 import {FixedPointMathLib} from "solmate/utils/FixedPointMathLib.sol";
 import {PoolKey} from "v4-core/src/types/PoolKey.sol";
 import {StateLibrary} from "v4-core/src/libraries/StateLibrary.sol";
+import {ERC6909} from "v4-core/src/ERC6909.sol";
 import "forge-std/Test.sol";
 
-contract TrailingStopHook is UniV4UserHook, ERC1155, Test {
+/// @notice This hook can execute trialing stop orders between 1 and 10%, with a step of 1.
+/// Larger values limit the interest of such a hook and avoid having to manage too many data, which would be gas-consuming.
+/// Based on https://github.com/saucepoint/v4-stoploss/blob/881a13ac3451b0cdab0e19e122e889f1607520b7/src/StopLoss.sol#L17
+contract TrailingStopHook is UniV4UserHook, ERC6909, Test {
     using FixedPointMathLib for uint256;
     using PoolIdLibrary for PoolKey;
     using CurrencyLibrary for Currency;
@@ -186,7 +189,7 @@ contract TrailingStopHook is UniV4UserHook, ERC1155, Test {
                 zeroForOne: zeroForOne
             });
         }
-        _mint(msg.sender, tokenId, amountIn, "");
+        _mint(msg.sender, tokenId, amountIn);
         totalSupply[tokenId] += amountIn;
 
         // interactions: transfer token0 to this contract
@@ -199,11 +202,6 @@ contract TrailingStopHook is UniV4UserHook, ERC1155, Test {
     // TODO: implement, is out of scope for the hackathon
     function killStopLoss() external {}
     // ------------------------------------- //
-
-    // -- 1155 -- //
-    function uri(uint256) public pure override returns (string memory) {
-        return "https://example.com";
-    }
 
     function getTokenId(
         PoolKey calldata poolKey,
