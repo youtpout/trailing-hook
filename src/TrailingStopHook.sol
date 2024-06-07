@@ -37,6 +37,8 @@ contract TrailingStopHook is UniV4UserHook, ERC6909, Test {
     struct TokenIdData {
         PoolKey poolKey;
         int24 tickLower;
+        // same basis as fees 10_000 = 1%
+        uint24 percent;
         bool zeroForOne;
     }
 
@@ -97,6 +99,9 @@ contract TrailingStopHook is UniV4UserHook, ERC6909, Test {
 
         int256 swapAmounts;
 
+        // todo calculate percent change
+        uint24 percentChange = 1;
+
         // fill stop losses in the opposite direction of the swap
         // avoids abuse/attack vectors
         bool stopLossZeroForOne = !params.zeroForOne;
@@ -108,7 +113,13 @@ contract TrailingStopHook is UniV4UserHook, ERC6909, Test {
                     stopLossZeroForOne
                 ];
                 if (swapAmounts > 0) {
-                    fillStopLoss(key, tick, stopLossZeroForOne, swapAmounts);
+                    fillStopLoss(
+                        key,
+                        tick,
+                        percentChange,
+                        stopLossZeroForOne,
+                        swapAmounts
+                    );
                 }
                 unchecked {
                     tick += key.tickSpacing;
@@ -120,7 +131,13 @@ contract TrailingStopHook is UniV4UserHook, ERC6909, Test {
                     stopLossZeroForOne
                 ];
                 if (swapAmounts > 0) {
-                    fillStopLoss(key, tick, stopLossZeroForOne, swapAmounts);
+                    fillStopLoss(
+                        key,
+                        tick,
+                        percentChange,
+                        stopLossZeroForOne,
+                        swapAmounts
+                    );
                 }
                 unchecked {
                     tick -= key.tickSpacing;
@@ -133,6 +150,7 @@ contract TrailingStopHook is UniV4UserHook, ERC6909, Test {
     function fillStopLoss(
         PoolKey calldata poolKey,
         int24 triggerTick,
+        uint24 percent,
         bool zeroForOne,
         int256 swapAmount
     ) internal {
@@ -155,7 +173,7 @@ contract TrailingStopHook is UniV4UserHook, ERC6909, Test {
         ] -= swapAmount;
 
         // capital from the swap is redeemable by position holders
-        uint256 tokenId = getTokenId(poolKey, triggerTick, zeroForOne);
+        uint256 tokenId = getTokenId(poolKey, triggerTick, percent, zeroForOne);
 
         // TODO: safe casting
         // balance delta returned by .swap(): negative amount indicates outflow from pool (and inflow into contract)
@@ -170,6 +188,7 @@ contract TrailingStopHook is UniV4UserHook, ERC6909, Test {
     function placeStopLoss(
         PoolKey calldata poolKey,
         int24 tickLower,
+        uint24 percent,
         uint256 amountIn,
         bool zeroForOne
     ) external returns (int24 tick) {
@@ -180,12 +199,13 @@ contract TrailingStopHook is UniV4UserHook, ERC6909, Test {
         stopLossPositions[poolKey.toId()][tick][zeroForOne] += int256(amountIn);
 
         // mint the receipt token
-        uint256 tokenId = getTokenId(poolKey, tick, zeroForOne);
+        uint256 tokenId = getTokenId(poolKey, tick, percent, zeroForOne);
         if (!tokenIdExists[tokenId]) {
             tokenIdExists[tokenId] = true;
             tokenIdIndex[tokenId] = TokenIdData({
                 poolKey: poolKey,
                 tickLower: tick,
+                percent: percent,
                 zeroForOne: zeroForOne
             });
         }
@@ -206,12 +226,18 @@ contract TrailingStopHook is UniV4UserHook, ERC6909, Test {
     function getTokenId(
         PoolKey calldata poolKey,
         int24 tickLower,
+        uint24 percent,
         bool zeroForOne
     ) public pure returns (uint256) {
         return
             uint256(
                 keccak256(
-                    abi.encodePacked(poolKey.toId(), tickLower, zeroForOne)
+                    abi.encodePacked(
+                        poolKey.toId(),
+                        tickLower,
+                        percent,
+                        zeroForOne
+                    )
                 )
             );
     }
