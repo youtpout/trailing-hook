@@ -16,7 +16,7 @@ import {StateLibrary} from "v4-core/src/libraries/StateLibrary.sol";
 import {ERC6909} from "v4-core/src/ERC6909.sol";
 import "forge-std/Test.sol";
 
-/// @notice This hook can execute trialing stop orders between 1 and 10%, with a step of 1.
+/// @notice This hook can execute trialing stop orders between 1 and 20%, with a step of 1.
 /// Larger values limit the interest of such a hook and avoid having to manage too many data, which would be gas-consuming.
 /// Based on https://github.com/saucepoint/v4-stoploss/blob/881a13ac3451b0cdab0e19e122e889f1607520b7/src/StopLoss.sol#L17
 contract TrailingStopHook is UniV4UserHook, ERC6909, Test {
@@ -24,11 +24,14 @@ contract TrailingStopHook is UniV4UserHook, ERC6909, Test {
     using PoolIdLibrary for PoolKey;
     using CurrencyLibrary for Currency;
 
+    error IncorrectPercentage(uint24 percent);
+
     mapping(PoolId poolId => int24 tickLower) public tickLowerLasts;
     mapping(PoolId poolId => mapping(int24 tick => mapping(bool zeroForOne => int256 amount)))
         public stopLossPositions;
+    mapping(PoolId => mapping(int24 => uint256[])) public trailingByTicksId;
 
-    // -- 1155 state -- //
+    // -- ERC6909 state -- //
     mapping(uint256 tokenId => TokenIdData) public tokenIdIndex;
     mapping(uint256 tokenId => bool) public tokenIdExists;
     mapping(uint256 tokenId => uint256 claimable) public claimable;
