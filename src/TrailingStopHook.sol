@@ -14,9 +14,10 @@ import {FixedPointMathLib} from "solmate/utils/FixedPointMathLib.sol";
 import {PoolKey} from "v4-core/src/types/PoolKey.sol";
 import {StateLibrary} from "v4-core/src/libraries/StateLibrary.sol";
 import {ERC6909} from "v4-core/src/ERC6909.sol";
+import {BeforeSwapDelta, BeforeSwapDeltaLibrary} from "v4-core/src/types/BeforeSwapDelta.sol";
 import "forge-std/Test.sol";
 
-/// @notice This hook can execute trialing stop orders between 1 and 20%, with a step of 1.
+/// @notice This hook can execute trialing stop orders between 1 and 10%, with a step of 1.
 /// Larger values limit the interest of such a hook and avoid having to manage too many data, which would be gas-consuming.
 /// Based on https://github.com/saucepoint/v4-stoploss/blob/881a13ac3451b0cdab0e19e122e889f1607520b7/src/StopLoss.sol#L17
 contract TrailingStopHook is UniV4UserHook, ERC6909, Test {
@@ -28,11 +29,12 @@ contract TrailingStopHook is UniV4UserHook, ERC6909, Test {
 
     mapping(PoolId poolId => int24 tickLower) public tickLowerLasts;
     mapping(PoolId poolId => mapping(int24 tick => mapping(bool zeroForOne => int256 amount)))
-        public stopLossPositions;
-    mapping(PoolId => mapping(int24 => uint256[])) public trailingByTicksId;
+        public trailingPositions;
+    mapping(PoolId poolId => mapping(int24 tick => mapping(bool zeroForOne => uint256[])))
+        public trailingByTicksId;
 
-    mapping(PoolId => mapping(uint32 => uint256)) public trailingByPercentId0;
-    mapping(PoolId => mapping(uint32 => uint256)) public trailingByPercentId1;
+    mapping(PoolId => mapping(uint24 percent => mapping(bool zeroForOne => uint256[])))
+        public trailingByPercentActive;
 
     // -- ERC6909 state -- //
     uint256 lastTokenId;
@@ -40,14 +42,6 @@ contract TrailingStopHook is UniV4UserHook, ERC6909, Test {
     mapping(uint256 tokenId => bool) public tokenIdExists;
     mapping(uint256 tokenId => uint256 claimable) public claimable;
     mapping(uint256 tokenId => uint256 supply) public totalSupply;
-
-    struct TokenIdData {
-        PoolKey poolKey;
-        int24 tickLower;
-        // same basis as fees 10_000 = 1%
-        uint24 percent;
-        bool zeroForOne;
-    }
 
     struct TrailingInfo {
         PoolKey poolKey;
@@ -82,7 +76,7 @@ contract TrailingStopHook is UniV4UserHook, ERC6909, Test {
                 beforeRemoveLiquidity: false,
                 afterAddLiquidity: false,
                 afterRemoveLiquidity: false,
-                beforeSwap: false,
+                beforeSwap: true,
                 afterSwap: true,
                 beforeDonate: false,
                 afterDonate: false,
@@ -102,6 +96,31 @@ contract TrailingStopHook is UniV4UserHook, ERC6909, Test {
     ) external override poolManagerOnly returns (bytes4) {
         setTickLowerLast(key.toId(), getTickLower(tick, key.tickSpacing));
         return TrailingStopHook.afterInitialize.selector;
+    }
+
+    function beforeSwap(
+        address,
+        PoolKey calldata key,
+        IPoolManager.SwapParams calldata,
+        bytes calldata
+    )
+        external
+        override
+        poolManagerOnly
+        returns (bytes4, BeforeSwapDelta, uint24)
+    {
+        (, int24 tickAfter, , ) = StateLibrary.getSlot0(
+            poolManager,
+            key.toId()
+        );
+        int24 newTick = getTickLower(tickAfter, key.tickSpacing);
+        setTickLowerLast(key.toId(), newTick);
+
+        return (
+            TrailingStopHook.beforeSwap.selector,
+            BeforeSwapDeltaLibrary.ZERO_DELTA,
+            0
+        );
     }
 
     function afterSwap(
@@ -128,7 +147,7 @@ contract TrailingStopHook is UniV4UserHook, ERC6909, Test {
         // TODO: test for off by one because of inequality
         if (prevTick < currentTick) {
             for (; tick < currentTick; ) {
-                swapAmounts = stopLossPositions[key.toId()][tick][
+                swapAmounts = trailingPositions[key.toId()][tick][
                     stopLossZeroForOne
                 ];
                 if (swapAmounts > 0) {
@@ -146,7 +165,7 @@ contract TrailingStopHook is UniV4UserHook, ERC6909, Test {
             }
         } else {
             for (; currentTick < tick; ) {
-                swapAmounts = stopLossPositions[key.toId()][tick][
+                swapAmounts = trailingPositions[key.toId()][tick][
                     stopLossZeroForOne
                 ];
                 if (swapAmounts > 0) {
@@ -163,6 +182,7 @@ contract TrailingStopHook is UniV4UserHook, ERC6909, Test {
                 }
             }
         }
+
         return (TrailingStopHook.afterSwap.selector, 0);
     }
 
@@ -187,12 +207,10 @@ contract TrailingStopHook is UniV4UserHook, ERC6909, Test {
             stopLossSwapParams,
             address(this)
         );
-        stopLossPositions[poolKey.toId()][triggerTick][
-            zeroForOne
-        ] -= swapAmount;
+        // remove this position once is fullfilled
 
         // capital from the swap is redeemable by position holders
-        uint256 tokenId = getTokenId(poolKey, triggerTick, percent, zeroForOne);
+        //uint256 tokenId = getTokenId(poolKey, triggerTick, percent, zeroForOne);
 
         // TODO: safe casting
         // balance delta returned by .swap(): negative amount indicates outflow from pool (and inflow into contract)
@@ -200,7 +218,35 @@ contract TrailingStopHook is UniV4UserHook, ERC6909, Test {
         uint256 amount = zeroForOne
             ? uint256(int256(-delta.amount1()))
             : uint256(int256(-delta.amount0()));
-        claimable[tokenId] += amount;
+
+        uint256[] memory trailingIds = trailingByTicksId[poolKey.toId()][
+            triggerTick
+        ][zeroForOne];
+
+        for (uint i = 0; i < trailingIds.length; i++) {
+            uint256 trailingId = trailingIds[i];
+            TrailingInfo storage trailing = tokenIdIndex[trailingId];
+            // todo correct calculation
+            trailing.filledAmount += amount;
+
+            // delete this trailing from list of active trailings
+            uint256[] storage trailingActives = trailingByPercentActive[
+                poolKey.toId()
+            ][trailing.percent][zeroForOne];
+            for (uint j = 0; j < trailingActives.length; j++) {
+                if (trailingActives[j] == trailingId) {
+                    trailingActives[j] = trailingActives[
+                        trailingActives.length - 1
+                    ];
+                    break;
+                }
+            }
+            trailingActives.pop();
+        }
+
+        // delete informations once trailing is fullfilled
+        delete trailingByTicksId[poolKey.toId()][triggerTick][zeroForOne];
+        delete trailingPositions[poolKey.toId()][triggerTick][zeroForOne];
     }
 
     // -- Trailing stop User Facing Functions -- //
@@ -210,31 +256,60 @@ contract TrailingStopHook is UniV4UserHook, ERC6909, Test {
         uint256 amountIn,
         bool zeroForOne
     ) external returns (int24 tick) {
+        // between 1 and 10%, with a step of 1
+        if (percent < 10_000 || percent > 100_000 || percent % 10_000 != 0) {
+            revert IncorrectPercentage(percent);
+        }
+
         (, int24 tickSlot, , ) = StateLibrary.getSlot0(
             poolManager,
             poolKey.toId()
         );
         // calculate ticklower base on percent trailing stop
-        int24 tickLower = tickSlot - ((tickSlot * int24(percent)) / 10000);
+        int24 tickLower = tickSlot - ((tickSlot * int24(percent)) / 10_000);
         // round down according to tickSpacing
         // TODO: should we round up depending on direction of the position?
         tick = getTickLower(tickLower, poolKey.tickSpacing);
         // TODO: safe casting
-        stopLossPositions[poolKey.toId()][tick][zeroForOne] += int256(amountIn);
+        trailingPositions[poolKey.toId()][tick][zeroForOne] += int256(amountIn);
+
+        // found corresponding trailing in existing list
+        uint256 tokenId = 0;
+        uint256[] storage listTrailing = trailingByPercentActive[
+            poolKey.toId()
+        ][percent][zeroForOne];
+        if (listTrailing.length > 0) {
+            TrailingInfo storage data = tokenIdIndex[tokenId];
+            if (data.filledAmount == 0 && data.tickLower <= tickLower) {
+                // we merge data only if the price is more or the same
+                data.tickLower = tickLower;
+            } else {
+                // else we create a new trailing
+                lastTokenId++;
+                tokenId = lastTokenId;
+                data.poolKey = poolKey;
+                data.tickLower = tickLower;
+                data.zeroForOne = zeroForOne;
+                data.percent = percent;
+            }
+        } else {
+            TrailingInfo memory data = tokenIdIndex[tokenId];
+            if (data.filledAmount == 0 && data.tickLower <= tickLower) {
+                // we merge data only if the price is more or the same
+                data.tickLower = tickLower;
+            } else {
+                // else we create a new trailing
+                lastTokenId++;
+                tokenId = lastTokenId;
+                data.poolKey = poolKey;
+                data.tickLower = tickLower;
+                data.zeroForOne = zeroForOne;
+                data.percent = percent;
+            }
+        }
 
         // mint the receipt token
-        uint256 tokenId = getTokenId(poolKey, tick, percent, zeroForOne);
-        // if (!tokenIdExists[tokenId]) {
-        //     tokenIdExists[tokenId] = true;
-        //     tokenIdIndex[tokenId] = TokenIdData({
-        //         poolKey: poolKey,
-        //         tickLower: tick,
-        //         percent: percent,
-        //         zeroForOne: zeroForOne
-        //     });
-        // }
         _mint(msg.sender, tokenId, amountIn);
-        totalSupply[tokenId] += amountIn;
 
         // interactions: transfer token0 to this contract
         address token = zeroForOne
@@ -247,34 +322,6 @@ contract TrailingStopHook is UniV4UserHook, ERC6909, Test {
     function killStopLoss() external {}
 
     // ------------------------------------- //
-
-    function getTokenId(
-        PoolKey calldata poolKey,
-        int24 tickLower,
-        uint24 percent,
-        bool zeroForOne
-    ) internal  returns (uint256) {
-        uint256 lastId = zeroForOne
-            ? trailingByPercentId0[poolKey.toId()][percent]
-            : trailingByPercentId1[poolKey.toId()][percent];
-        if (lastId > 0) {
-            TrailingInfo storage data = tokenIdIndex[lastId];
-            if (data.filledAmount == 0 && data.tickLower <= tickLower) {
-                // we merge data only if the price is more or the same
-                data.tickLower = tickLower;
-            } else {
-                // else we create a new trailing
-                lastTokenId++;
-                lastId = lastTokenId;
-                data.poolKey = poolKey;
-                data.tickLower = tickLower;
-                data.zeroForOne = zeroForOne;
-                data.percent = percent;
-            }
-        }
-
-        return lastId;
-    }
 
     function redeem(
         uint256 tokenId,
@@ -311,6 +358,19 @@ contract TrailingStopHook is UniV4UserHook, ERC6909, Test {
     // ---------- //
 
     // -- Util functions -- //
+    function rebalanceTrailings(
+        PoolId poolId,
+        uint24 percent,
+        int24 newTick,
+        bool zeroForOne
+    ) private {
+        uint256[] memory activeTrailings = trailingByPercentActive[poolId][
+            percent
+        ][zeroForOne];
+
+        for (uint i = 0; i < activeTrailings.length; i++) {}
+    }
+
     function setTickLowerLast(PoolId poolId, int24 tickLower) private {
         tickLowerLasts[poolId] = tickLower;
     }
