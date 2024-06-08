@@ -31,8 +31,12 @@ contract TrailingStopHook is UniV4UserHook, ERC6909, Test {
         public stopLossPositions;
     mapping(PoolId => mapping(int24 => uint256[])) public trailingByTicksId;
 
+    mapping(PoolId => mapping(uint32 => uint256)) public trailingByPercentId0;
+    mapping(PoolId => mapping(uint32 => uint256)) public trailingByPercentId1;
+
     // -- ERC6909 state -- //
-    mapping(uint256 tokenId => TokenIdData) public tokenIdIndex;
+    uint256 lastTokenId;
+    mapping(uint256 tokenId => TrailingInfo) tokenIdIndex;
     mapping(uint256 tokenId => bool) public tokenIdExists;
     mapping(uint256 tokenId => uint256 claimable) public claimable;
     mapping(uint256 tokenId => uint256 supply) public totalSupply;
@@ -43,6 +47,18 @@ contract TrailingStopHook is UniV4UserHook, ERC6909, Test {
         // same basis as fees 10_000 = 1%
         uint24 percent;
         bool zeroForOne;
+    }
+
+    struct TrailingInfo {
+        PoolKey poolKey;
+        int24 tickLower;
+        // same basis as fees 10_000 = 1%
+        uint24 percent;
+        bool zeroForOne;
+        uint256 totalAmount;
+        uint256 filledAmount;
+        // if this trailing is merged to an other
+        uint256 newId;
     }
 
     // constants for sqrtPriceLimitX96 which allow for unlimited impact
@@ -187,14 +203,19 @@ contract TrailingStopHook is UniV4UserHook, ERC6909, Test {
         claimable[tokenId] += amount;
     }
 
-    // -- Stop Loss User Facing Functions -- //
-    function placeStopLoss(
+    // -- Trailing stop User Facing Functions -- //
+    function placeTrailingLoss(
         PoolKey calldata poolKey,
-        int24 tickLower,
         uint24 percent,
         uint256 amountIn,
         bool zeroForOne
     ) external returns (int24 tick) {
+        (, int24 tickSlot, , ) = StateLibrary.getSlot0(
+            poolManager,
+            poolKey.toId()
+        );
+        // calculate ticklower base on percent trailing stop
+        int24 tickLower = tickSlot - ((tickSlot * int24(percent)) / 10000);
         // round down according to tickSpacing
         // TODO: should we round up depending on direction of the position?
         tick = getTickLower(tickLower, poolKey.tickSpacing);
@@ -203,15 +224,15 @@ contract TrailingStopHook is UniV4UserHook, ERC6909, Test {
 
         // mint the receipt token
         uint256 tokenId = getTokenId(poolKey, tick, percent, zeroForOne);
-        if (!tokenIdExists[tokenId]) {
-            tokenIdExists[tokenId] = true;
-            tokenIdIndex[tokenId] = TokenIdData({
-                poolKey: poolKey,
-                tickLower: tick,
-                percent: percent,
-                zeroForOne: zeroForOne
-            });
-        }
+        // if (!tokenIdExists[tokenId]) {
+        //     tokenIdExists[tokenId] = true;
+        //     tokenIdIndex[tokenId] = TokenIdData({
+        //         poolKey: poolKey,
+        //         tickLower: tick,
+        //         percent: percent,
+        //         zeroForOne: zeroForOne
+        //     });
+        // }
         _mint(msg.sender, tokenId, amountIn);
         totalSupply[tokenId] += amountIn;
 
@@ -224,6 +245,7 @@ contract TrailingStopHook is UniV4UserHook, ERC6909, Test {
 
     // TODO: implement, is out of scope for the hackathon
     function killStopLoss() external {}
+
     // ------------------------------------- //
 
     function getTokenId(
@@ -231,18 +253,27 @@ contract TrailingStopHook is UniV4UserHook, ERC6909, Test {
         int24 tickLower,
         uint24 percent,
         bool zeroForOne
-    ) public pure returns (uint256) {
-        return
-            uint256(
-                keccak256(
-                    abi.encodePacked(
-                        poolKey.toId(),
-                        tickLower,
-                        percent,
-                        zeroForOne
-                    )
-                )
-            );
+    ) internal  returns (uint256) {
+        uint256 lastId = zeroForOne
+            ? trailingByPercentId0[poolKey.toId()][percent]
+            : trailingByPercentId1[poolKey.toId()][percent];
+        if (lastId > 0) {
+            TrailingInfo storage data = tokenIdIndex[lastId];
+            if (data.filledAmount == 0 && data.tickLower <= tickLower) {
+                // we merge data only if the price is more or the same
+                data.tickLower = tickLower;
+            } else {
+                // else we create a new trailing
+                lastTokenId++;
+                lastId = lastTokenId;
+                data.poolKey = poolKey;
+                data.tickLower = tickLower;
+                data.zeroForOne = zeroForOne;
+                data.percent = percent;
+            }
+        }
+
+        return lastId;
     }
 
     function redeem(
@@ -258,7 +289,7 @@ contract TrailingStopHook is UniV4UserHook, ERC6909, Test {
             "StopLoss: not enough tokens to redeem"
         );
 
-        TokenIdData memory data = tokenIdIndex[tokenId];
+        TrailingInfo memory data = tokenIdIndex[tokenId];
         address token = data.zeroForOne
             ? Currency.unwrap(data.poolKey.currency1)
             : Currency.unwrap(data.poolKey.currency0);
@@ -276,6 +307,7 @@ contract TrailingStopHook is UniV4UserHook, ERC6909, Test {
         // interaction: transfer the underlying to the caller
         IERC20(token).transfer(destination, amountOut);
     }
+
     // ---------- //
 
     // -- Util functions -- //
