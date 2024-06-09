@@ -26,9 +26,12 @@ contract TrailingStopHook is UniV4UserHook, ERC6909, Test {
     using CurrencyLibrary for Currency;
 
     error IncorrectPercentage(uint24 percent);
+    error AlreadyExecuted(uint256 trailingId);
+    error NotExecuted(uint256 trailingId);
+    error NoAmount(uint256 tokenId);
 
     mapping(PoolId poolId => int24 tickLower) public tickLowerLasts;
-    mapping(PoolId poolId => mapping(int24 tick => mapping(bool zeroForOne => int256 amount)))
+    mapping(PoolId poolId => mapping(int24 tick => mapping(bool zeroForOne => uint256 amount)))
         public trailingPositions;
     mapping(PoolId poolId => mapping(int24 tick => mapping(bool zeroForOne => uint256[])))
         public trailingByTicksId;
@@ -40,8 +43,6 @@ contract TrailingStopHook is UniV4UserHook, ERC6909, Test {
     uint256 lastTokenId;
     mapping(uint256 tokenId => TrailingInfo) tokenIdIndex;
     mapping(uint256 tokenId => bool) public tokenIdExists;
-    mapping(uint256 tokenId => uint256 claimable) public claimable;
-    mapping(uint256 tokenId => uint256 supply) public totalSupply;
 
     struct TrailingInfo {
         PoolKey poolKey;
@@ -135,7 +136,7 @@ contract TrailingStopHook is UniV4UserHook, ERC6909, Test {
         int24 currentTick = getTickLower(tick, key.tickSpacing);
         tick = prevTick;
 
-        int256 swapAmounts;
+        uint256 swapAmounts;
 
         // todo calculate percent change
         uint24 percentChange = 1;
@@ -151,13 +152,7 @@ contract TrailingStopHook is UniV4UserHook, ERC6909, Test {
                     stopLossZeroForOne
                 ];
                 if (swapAmounts > 0) {
-                    fillStopLoss(
-                        key,
-                        tick,
-                        percentChange,
-                        stopLossZeroForOne,
-                        swapAmounts
-                    );
+                    fillStopLoss(key, tick, stopLossZeroForOne, swapAmounts);
                 }
                 unchecked {
                     tick += key.tickSpacing;
@@ -169,13 +164,7 @@ contract TrailingStopHook is UniV4UserHook, ERC6909, Test {
                     stopLossZeroForOne
                 ];
                 if (swapAmounts > 0) {
-                    fillStopLoss(
-                        key,
-                        tick,
-                        percentChange,
-                        stopLossZeroForOne,
-                        swapAmounts
-                    );
+                    fillStopLoss(key, tick, stopLossZeroForOne, swapAmounts);
                 }
                 unchecked {
                     tick -= key.tickSpacing;
@@ -189,14 +178,13 @@ contract TrailingStopHook is UniV4UserHook, ERC6909, Test {
     function fillStopLoss(
         PoolKey calldata poolKey,
         int24 triggerTick,
-        uint24 percent,
         bool zeroForOne,
-        int256 swapAmount
+        uint256 swapAmount
     ) internal {
         IPoolManager.SwapParams memory stopLossSwapParams = IPoolManager
             .SwapParams({
                 zeroForOne: zeroForOne,
-                amountSpecified: swapAmount,
+                amountSpecified: int256(swapAmount),
                 sqrtPriceLimitX96: zeroForOne
                     ? MIN_PRICE_LIMIT
                     : MAX_PRICE_LIMIT
@@ -246,11 +234,10 @@ contract TrailingStopHook is UniV4UserHook, ERC6909, Test {
 
         // delete informations once trailing is fullfilled
         delete trailingByTicksId[poolKey.toId()][triggerTick][zeroForOne];
-        delete trailingPositions[poolKey.toId()][triggerTick][zeroForOne];
     }
 
     // -- Trailing stop User Facing Functions -- //
-    function placeTrailingLoss(
+    function placeTrailing(
         PoolKey calldata poolKey,
         uint24 percent,
         uint256 amountIn,
@@ -265,13 +252,12 @@ contract TrailingStopHook is UniV4UserHook, ERC6909, Test {
             poolManager,
             poolKey.toId()
         );
-        // calculate ticklower base on percent trailing stop
-        int24 tickLower = tickSlot - ((tickSlot * int24(percent)) / 10_000);
+        // calculate ticklower base on percent trailing stop, 1% price movement equal 100 ticks change
+        int24 tickLower = tickSlot - ((100 * int24(percent)) / 10_000);
         // round down according to tickSpacing
-        // TODO: should we round up depending on direction of the position?
         tick = getTickLower(tickLower, poolKey.tickSpacing);
-        // TODO: safe casting
-        trailingPositions[poolKey.toId()][tick][zeroForOne] += int256(amountIn);
+
+        trailingPositions[poolKey.toId()][tick][zeroForOne] += amountIn;
 
         // found corresponding trailing in existing list
         uint256 tokenId = 0;
@@ -318,46 +304,93 @@ contract TrailingStopHook is UniV4UserHook, ERC6909, Test {
         IERC20(token).transferFrom(msg.sender, address(this), amountIn);
     }
 
-    // TODO: implement, is out of scope for the hackathon
-    function killStopLoss() external {}
+    // if user want to remove a trailing
+    function removeTrailing(uint256 id) external {
+        uint256 balanceUser = balanceOf[msg.sender][id];
+        if (balanceUser == 0) {
+            // the user has nothing to withdraw
+            revert NoAmount(id);
+        }
 
-    // ------------------------------------- //
+        // the trailing can be merge with other trailing we need to check were amount was moved
+        uint256 activeId = getActiveTrailing(id);
 
-    function redeem(
-        uint256 tokenId,
-        uint256 amountIn,
-        address destination
-    ) external {
+        TrailingInfo storage trailing = tokenIdIndex[activeId];
+
+        if (trailing.filledAmount > 0) {
+            // if trailing was filled we can't cancel it
+            revert AlreadyExecuted(id);
+        }
+
+        // we burn the share of the user and remove it from active trailing
+        _burn(msg.sender, id, balanceUser);
+        trailing.totalAmount -= balanceUser;
+
+        PoolKey memory poolKey = trailing.poolKey;
+        bool zeroForOne = trailing.zeroForOne;
+        PoolId poolId = poolKey.toId();
+        int24 tick = trailing.tickLower;
+
+        // remove amount from trailing positions
+        trailingPositions[poolId][tick][zeroForOne] -= balanceUser;
+
+        // if the trailing got no amount anymore we delete it from everywhere
+        if (trailing.totalAmount == 0) {
+            deleteFromActive(activeId, poolId, trailing.percent, zeroForOne);
+            deleteFromTicks(activeId, poolId, tick, zeroForOne);
+        }
+
+        address token = zeroForOne
+            ? Currency.unwrap(poolKey.currency0)
+            : Currency.unwrap(poolKey.currency1);
+
+        // reimbourse the user
+        IERC20(token).transfer(msg.sender, balanceUser);
+    }
+
+    /// @notice the user claim after this trailing was fulffiles
+    function claim(uint256 tokenId) external {
         // checks: an amount to redeem
-        require(claimable[tokenId] > 0, "StopLoss: no claimable amount");
         uint256 receiptBalance = balanceOf[msg.sender][tokenId];
-        require(
-            amountIn <= receiptBalance,
-            "StopLoss: not enough tokens to redeem"
-        );
+        if (receiptBalance == 0) {
+            // the user has nothing to withdraw
+            revert NoAmount(tokenId);
+        }
+        uint256 activeId = getActiveTrailing(tokenId);
+        TrailingInfo memory data = tokenIdIndex[activeId];
 
-        TrailingInfo memory data = tokenIdIndex[tokenId];
+        if (data.filledAmount == 0) {
+            revert NotExecuted(tokenId);
+        }
+
         address token = data.zeroForOne
             ? Currency.unwrap(data.poolKey.currency1)
             : Currency.unwrap(data.poolKey.currency0);
 
         // effects: burn the token
         // amountOut = claimable * (amountIn / totalSupply)
-        uint256 amountOut = amountIn.mulDivDown(
-            claimable[tokenId],
-            totalSupply[tokenId]
+        uint256 amountOut = receiptBalance.mulDivDown(
+            data.filledAmount,
+            data.totalAmount
         );
-        claimable[tokenId] -= amountOut;
-        _burn(msg.sender, tokenId, amountIn);
-        totalSupply[tokenId] -= amountIn;
+
+        _burn(msg.sender, tokenId, receiptBalance);
 
         // interaction: transfer the underlying to the caller
-        IERC20(token).transfer(destination, amountOut);
+        IERC20(token).transfer(msg.sender, amountOut);
     }
 
     // ---------- //
 
     // -- Util functions -- //
+    function getActiveTrailing(uint256 id) public view returns (uint256) {
+        TrailingInfo memory trailing = tokenIdIndex[id];
+        if (trailing.newId != 0) {
+            return getActiveTrailing(trailing.newId);
+        }
+        return id;
+    }
+
     function rebalanceTrailings(
         PoolId poolId,
         uint24 percent,
@@ -382,5 +415,45 @@ contract TrailingStopHook is UniV4UserHook, ERC6909, Test {
         int24 compressed = tick / tickSpacing;
         if (tick < 0 && tick % tickSpacing != 0) compressed--; // round towards negative infinity
         return compressed * tickSpacing;
+    }
+
+    // -- delete a trailing from all active list-- //
+
+    function deleteFromActive(
+        uint256 idToDelete,
+        PoolId poolId,
+        uint24 percent,
+        bool zeroForOne
+    ) private {
+        uint256[] storage arr = trailingByPercentActive[poolId][percent][
+            zeroForOne
+        ];
+        // Move the last element into the place to delete
+        for (uint j = 0; j < arr.length; j++) {
+            if (arr[j] == idToDelete) {
+                arr[j] = arr[arr.length - 1];
+                break;
+            }
+        }
+        // Remove the last element
+        arr.pop();
+    }
+
+    function deleteFromTicks(
+        uint256 idToDelete,
+        PoolId poolId,
+        int24 tick,
+        bool zeroForOne
+    ) private {
+        uint256[] storage arr = trailingByTicksId[poolId][tick][zeroForOne];
+        // Move the last element into the place to delete
+        for (uint j = 0; j < arr.length; j++) {
+            if (arr[j] == idToDelete) {
+                arr[j] = arr[arr.length - 1];
+                break;
+            }
+        }
+        // Remove the last element
+        arr.pop();
     }
 }
