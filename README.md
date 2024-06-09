@@ -1,24 +1,32 @@
-# v4-template
-### **A template for writing Uniswap v4 Hooks 🦄**
+# Trailing Stop
 
-[`Use this Template`](https://github.com/uniswapfoundation/v4-template/generate)
+The purpose of this hook is to implement the trailing stop, a feature that is very present on CEXs but not very present on the defi due to its complexity.
 
-1. The example hook [Counter.sol](src/Counter.sol) demonstrates the `beforeSwap()` and `afterSwap()` hooks
-2. The test template [Counter.t.sol](test/Counter.t.sol) preconfigures the v4 pool manager, test tokens, and test liquidity.
+There are already hooks for limit and stop-loss orders, so all that was missing was to reproduce the range of functions available on Cexs.
 
-<details>
-<summary>Updating to v4-template:latest</summary>
+This hook is self-contained and requires no external data to operate.
 
-This template is actively maintained -- you can update the v4 dependencies, scripts, and helpers: 
-```bash
-git remote add template https://github.com/uniswapfoundation/v4-template
-git fetch template
-git merge template/main <BRANCH> --allow-unrelated-histories
-```
+This hook can execute trailing stop orders between 1 and 10%, with a step of 1.
+Larger values limit the interest of such a hook and avoid having to manage too many data, which would be gas-consuming. But you can easily update it to support extended percentage.
 
-</details>
+It is based on the saucepoint stop-loss hook, https://github.com/saucepoint/v4-stoploss/blob/881a13ac3451b0cdab0e19e122e889f1607520b7/src/StopLoss.sol#L17
 
----
+A trailing stop is simply a stop loss with a stop that adjusts according to the market.
+
+Another possibility would be to use a limit order that would also adjust itself.
+
+## How it works
+
+The hook is based on a tick spacing of 50, which corresponds to a price change of 0.5%, a multiple of 1%.
+
+Each time the price changes by 0.5% in one direction or another, in the beforeswap function we'll search for active orders and update their selling price according to the new price. If there are other orders on the same percentage with the same selling price, we merge them, thus limiting the number of active orders.
+
+In the afterswap, we check whether any active orders match the conditions for selling the new price. If so, we launch the sale of the asset and delete these positions.
+
+When a user places an order, we calculate the selling price in relation to the percentage requested by the user. If there are other orders on the same percentage with the same selling price, we merge them, thus limiting the number of active orders.
+A token based on the 6909 standard is minted and represents the amount deposited by the user for the traling order id deposited.
+
+The user can delete a current order if it has not been executed, otherwise he can claim the purchased token.
 
 ## Set up
 

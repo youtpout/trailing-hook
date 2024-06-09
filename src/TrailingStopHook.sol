@@ -17,7 +17,7 @@ import {ERC6909} from "v4-core/src/ERC6909.sol";
 import {BeforeSwapDelta, BeforeSwapDeltaLibrary} from "v4-core/src/types/BeforeSwapDelta.sol";
 import "forge-std/Test.sol";
 
-/// @notice This hook can execute trialing stop orders between 1 and 10%, with a step of 1.
+/// @notice This hook can execute trailing stop orders between 1 and 10%, with a step of 1.
 /// Larger values limit the interest of such a hook and avoid having to manage too many data, which would be gas-consuming.
 /// Based on https://github.com/saucepoint/v4-stoploss/blob/881a13ac3451b0cdab0e19e122e889f1607520b7/src/StopLoss.sol#L17
 contract TrailingStopHook is UniV4UserHook, ERC6909, Test {
