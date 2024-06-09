@@ -25,6 +25,7 @@ contract TrailingStopHook is UniV4UserHook, ERC6909, Test {
     using PoolIdLibrary for PoolKey;
     using CurrencyLibrary for Currency;
 
+    error IncorrectTickSpacing(int24 tickSpacing);
     error IncorrectPercentage(uint24 percent);
     error AlreadyExecuted(uint256 trailingId);
     error NotExecuted(uint256 trailingId);
@@ -71,7 +72,7 @@ contract TrailingStopHook is UniV4UserHook, ERC6909, Test {
     {
         return
             Hooks.Permissions({
-                beforeInitialize: false,
+                beforeInitialize: true,
                 afterInitialize: true,
                 beforeAddLiquidity: false,
                 beforeRemoveLiquidity: false,
@@ -86,6 +87,19 @@ contract TrailingStopHook is UniV4UserHook, ERC6909, Test {
                 afterAddLiquidityReturnDelta: false,
                 afterRemoveLiquidityReturnDelta: false
             });
+    }
+
+    function beforeInitialize(
+        address,
+        PoolKey calldata poolKey,
+        uint160,
+        bytes calldata
+    ) external override returns (bytes4) {
+        // we use a tick spacing of 50 so the price movement is 0.5% a multiple of 1%.
+        if (poolKey.tickSpacing != 50) {
+            revert IncorrectTickSpacing(poolKey.tickSpacing);
+        }
+        return TrailingStopHook.beforeInitialize.selector;
     }
 
     function afterInitialize(
@@ -110,12 +124,16 @@ contract TrailingStopHook is UniV4UserHook, ERC6909, Test {
         poolManagerOnly
         returns (bytes4, BeforeSwapDelta, uint24)
     {
-        (, int24 tickAfter, , ) = StateLibrary.getSlot0(
-            poolManager,
-            key.toId()
-        );
+        PoolId poolId = key.toId();
+        (, int24 tickAfter, , ) = StateLibrary.getSlot0(poolManager, poolId);
+
+        int24 lastTick = tickLowerLasts[poolId];
         int24 newTick = getTickLower(tickAfter, key.tickSpacing);
-        setTickLowerLast(key.toId(), newTick);
+        if (lastTick != newTick) {
+            // we adjust trailing to the newer tick
+            rebalanceTrailings(poolId, lastTick, newTick);
+            setTickLowerLast(poolId, newTick);
+        }
 
         return (
             TrailingStopHook.beforeSwap.selector,
@@ -137,9 +155,6 @@ contract TrailingStopHook is UniV4UserHook, ERC6909, Test {
         tick = prevTick;
 
         uint256 swapAmounts;
-
-        // todo calculate percent change
-        uint24 percentChange = 1;
 
         // fill stop losses in the opposite direction of the swap
         // avoids abuse/attack vectors
@@ -368,7 +383,7 @@ contract TrailingStopHook is UniV4UserHook, ERC6909, Test {
             : Currency.unwrap(data.poolKey.currency0);
 
         // effects: burn the token
-        // amountOut = claimable * (amountIn / totalSupply)
+        // amountOut = filled amount * (user balance / total amount)
         uint256 amountOut = receiptBalance.mulDivDown(
             data.filledAmount,
             data.totalAmount
@@ -391,17 +406,44 @@ contract TrailingStopHook is UniV4UserHook, ERC6909, Test {
         return id;
     }
 
+    /// @notice Trailing need to follow actual price
+    /// so we readjust them between tick change
+    /// if tick grow we update trailing based on currency 0
+    /// if the tick decrease we update trailing based on currency 1
     function rebalanceTrailings(
         PoolId poolId,
-        uint24 percent,
-        int24 newTick,
-        bool zeroForOne
+        int24 lastTick,
+        int24 newTick
     ) private {
-        uint256[] memory activeTrailings = trailingByPercentActive[poolId][
-            percent
-        ][zeroForOne];
+        bool zeroForOne = newTick > lastTick;
+        for (uint i = 1; i < 10; i++) {
+            uint24 percent = uint24(i) * 10_000;
+            // todo don't move all percentage
+            uint256[] memory activeTrailings = trailingByPercentActive[poolId][
+                percent
+            ][zeroForOne];
+            for (uint j = 0; j < activeTrailings.length; j++) {
+                // calcul tick lower by percent
+                int24 tickLower = newTick - ((100 * int24(percent)) / 10_000);
+                uint256 trailingId = activeTrailings[j];
+                TrailingInfo storage trailing = tokenIdIndex[trailingId];
+                int24 oldTick = trailing.tickLower;
+                // move amount from  trailingPositions
+                trailingPositions[poolId][oldTick][zeroForOne] -= trailing
+                    .totalAmount;
+                trailingPositions[poolId][tickLower][zeroForOne] += trailing
+                    .totalAmount;
 
-        for (uint i = 0; i < activeTrailings.length; i++) {}
+                // update trailing by tick id too
+                deleteFromTicks(trailingId, poolId, oldTick, zeroForOne);
+                trailingByTicksId[poolId][tickLower][zeroForOne].push(
+                    trailingId
+                );
+
+                // update data in current trailing
+                trailing.tickLower = tickLower;
+            }
+        }
     }
 
     function setTickLowerLast(PoolId poolId, int24 tickLower) private {
