@@ -1,4 +1,4 @@
-# Trailing Stop
+# Trailing Stop Hook
 
 The purpose of this hook is to implement the trailing stop, a feature that is very present on CEXs but not very present on the defi due to its complexity.
 
