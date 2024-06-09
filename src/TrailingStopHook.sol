@@ -42,8 +42,7 @@ contract TrailingStopHook is UniV4UserHook, ERC6909, Test {
 
     // -- ERC6909 state -- //
     uint256 lastTokenId;
-    mapping(uint256 tokenId => TrailingInfo) tokenIdIndex;
-    mapping(uint256 tokenId => bool) public tokenIdExists;
+    mapping(uint256 tokenId => TrailingInfo) trailingInfoById;
 
     struct TrailingInfo {
         PoolKey poolKey;
@@ -228,7 +227,7 @@ contract TrailingStopHook is UniV4UserHook, ERC6909, Test {
 
         for (uint i = 0; i < trailingIds.length; i++) {
             uint256 trailingId = trailingIds[i];
-            TrailingInfo storage trailing = tokenIdIndex[trailingId];
+            TrailingInfo storage trailing = trailingInfoById[trailingId];
             // todo correct calculation
             trailing.filledAmount += amount;
 
@@ -280,7 +279,7 @@ contract TrailingStopHook is UniV4UserHook, ERC6909, Test {
             poolKey.toId()
         ][percent][zeroForOne];
         if (listTrailing.length > 0) {
-            TrailingInfo storage data = tokenIdIndex[tokenId];
+            TrailingInfo storage data = trailingInfoById[tokenId];
             if (data.filledAmount == 0 && data.tickLower <= tickLower) {
                 // we merge data only if the price is more or the same
                 data.tickLower = tickLower;
@@ -294,7 +293,7 @@ contract TrailingStopHook is UniV4UserHook, ERC6909, Test {
                 data.percent = percent;
             }
         } else {
-            TrailingInfo memory data = tokenIdIndex[tokenId];
+            TrailingInfo memory data = trailingInfoById[tokenId];
             if (data.filledAmount == 0 && data.tickLower <= tickLower) {
                 // we merge data only if the price is more or the same
                 data.tickLower = tickLower;
@@ -330,7 +329,7 @@ contract TrailingStopHook is UniV4UserHook, ERC6909, Test {
         // the trailing can be merge with other trailing we need to check were amount was moved
         uint256 activeId = getActiveTrailing(id);
 
-        TrailingInfo storage trailing = tokenIdIndex[activeId];
+        TrailingInfo storage trailing = trailingInfoById[activeId];
 
         if (trailing.filledAmount > 0) {
             // if trailing was filled we can't cancel it
@@ -372,7 +371,7 @@ contract TrailingStopHook is UniV4UserHook, ERC6909, Test {
             revert NoAmount(tokenId);
         }
         uint256 activeId = getActiveTrailing(tokenId);
-        TrailingInfo memory data = tokenIdIndex[activeId];
+        TrailingInfo memory data = trailingInfoById[activeId];
 
         if (data.filledAmount == 0) {
             revert NotExecuted(tokenId);
@@ -399,7 +398,7 @@ contract TrailingStopHook is UniV4UserHook, ERC6909, Test {
 
     // -- Util functions -- //
     function getActiveTrailing(uint256 id) public view returns (uint256) {
-        TrailingInfo memory trailing = tokenIdIndex[id];
+        TrailingInfo memory trailing = trailingInfoById[id];
         if (trailing.newId != 0) {
             return getActiveTrailing(trailing.newId);
         }
@@ -426,7 +425,7 @@ contract TrailingStopHook is UniV4UserHook, ERC6909, Test {
                 // calcul tick lower by percent
                 int24 tickLower = newTick - ((100 * int24(percent)) / 10_000);
                 uint256 trailingId = activeTrailings[j];
-                TrailingInfo storage trailing = tokenIdIndex[trailingId];
+                TrailingInfo storage trailing = trailingInfoById[trailingId];
                 int24 oldTick = trailing.tickLower;
                 // move amount from  trailingPositions
                 trailingPositions[poolId][oldTick][zeroForOne] -= trailing
