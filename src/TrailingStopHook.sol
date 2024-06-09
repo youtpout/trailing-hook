@@ -41,7 +41,7 @@ contract TrailingStopHook is UniV4UserHook, ERC6909, Test {
         public trailingByPercentActive;
 
     // -- ERC6909 state -- //
-    uint256 lastTokenId;
+    uint256 lastTokenId = 1;
     mapping(uint256 tokenId => TrailingInfo) trailingInfoById;
 
     struct TrailingInfo {
@@ -57,7 +57,7 @@ contract TrailingStopHook is UniV4UserHook, ERC6909, Test {
     }
 
     // constants for sqrtPriceLimitX96 which allow for unlimited impact
-    // (stop loss *should* market sell regardless of market depth 🥴)
+    // (trailing stop *should* market sell regardless of market depth 🥴)
     uint160 public constant MIN_PRICE_LIMIT = TickMath.MIN_SQRT_PRICE + 1;
     uint160 public constant MAX_PRICE_LIMIT = TickMath.MAX_SQRT_PRICE - 1;
 
@@ -155,7 +155,7 @@ contract TrailingStopHook is UniV4UserHook, ERC6909, Test {
 
         uint256 swapAmounts;
 
-        // fill stop losses in the opposite direction of the swap
+        // fill trailing in the opposite direction of the swap
         // avoids abuse/attack vectors
         bool stopLossZeroForOne = !params.zeroForOne;
 
@@ -261,61 +261,49 @@ contract TrailingStopHook is UniV4UserHook, ERC6909, Test {
         if (percent < 10_000 || percent > 100_000 || percent % 10_000 != 0) {
             revert IncorrectPercentage(percent);
         }
-
-        (, int24 tickSlot, , ) = StateLibrary.getSlot0(
-            poolManager,
-            poolKey.toId()
-        );
+        PoolId poolId = poolKey.toId();
+        (, int24 tickSlot, , ) = StateLibrary.getSlot0(poolManager, poolId);
         // calculate ticklower base on percent trailing stop, 1% price movement equal 100 ticks change
-        int24 tickLower = tickSlot - ((100 * int24(percent)) / 10_000);
+        int24 tickPercent = tickSlot - ((100 * int24(percent)) / 10_000);
         // round down according to tickSpacing
-        tick = getTickLower(tickLower, poolKey.tickSpacing);
+        int24 tickLower = getTickLower(tickPercent, poolKey.tickSpacing);
 
-        trailingPositions[poolKey.toId()][tick][zeroForOne] += amountIn;
-
-        // found corresponding trailing in existing list
-        uint256 tokenId = 0;
-        uint256[] storage listTrailing = trailingByPercentActive[
-            poolKey.toId()
-        ][percent][zeroForOne];
-        if (listTrailing.length > 0) {
-            TrailingInfo storage data = trailingInfoById[tokenId];
-            if (data.filledAmount == 0 && data.tickLower <= tickLower) {
-                // we merge data only if the price is more or the same
-                data.tickLower = tickLower;
-            } else {
-                // else we create a new trailing
-                lastTokenId++;
-                tokenId = lastTokenId;
-                data.poolKey = poolKey;
-                data.tickLower = tickLower;
-                data.zeroForOne = zeroForOne;
-                data.percent = percent;
-            }
-        } else {
-            TrailingInfo memory data = trailingInfoById[tokenId];
-            if (data.filledAmount == 0 && data.tickLower <= tickLower) {
-                // we merge data only if the price is more or the same
-                data.tickLower = tickLower;
-            } else {
-                // else we create a new trailing
-                lastTokenId++;
-                tokenId = lastTokenId;
-                data.poolKey = poolKey;
-                data.tickLower = tickLower;
-                data.zeroForOne = zeroForOne;
-                data.percent = percent;
-            }
-        }
-
-        // mint the receipt token
-        _mint(msg.sender, tokenId, amountIn);
-
-        // interactions: transfer token0 to this contract
+        // transfer token to this contract
         address token = zeroForOne
             ? Currency.unwrap(poolKey.currency0)
             : Currency.unwrap(poolKey.currency1);
         IERC20(token).transferFrom(msg.sender, address(this), amountIn);
+
+        trailingPositions[poolKey.toId()][tick][zeroForOne] += amountIn;
+
+        // found corresponding trailing in existing list
+        uint256 tokenId = mergeTrailing(
+            poolId,
+            percent,
+            zeroForOne,
+            amountIn,
+            tickLower
+        );
+        if (tokenId == 0) {
+            // if we don't find similar trailing we will create a new one
+            TrailingInfo memory data = TrailingInfo(
+                poolKey,
+                tickLower,
+                percent,
+                zeroForOne,
+                amountIn,
+                0,
+                0
+            );
+            lastTokenId++;
+            tokenId = lastTokenId;
+            trailingInfoById[tokenId] = data;
+            trailingByTicksId[poolId][tickLower][zeroForOne].push(tokenId);
+            trailingByPercentActive[poolId][percent][zeroForOne].push(tokenId);
+        }
+
+        // mint the receipt token
+        _mint(msg.sender, tokenId, amountIn);
     }
 
     // if user want to remove a trailing
@@ -405,6 +393,32 @@ contract TrailingStopHook is UniV4UserHook, ERC6909, Test {
         return id;
     }
 
+    /// @notice Try to find a trailing who match the trailing pass in parameters
+    /// the goal is to reunite trailing of same percentage on the same ticks
+    /// so we will manage less trailing in each operations
+    /// return 0 if don't find matching trailing
+    function mergeTrailing(
+        PoolId poolId,
+        uint24 percent,
+        bool zeroForOne,
+        uint256 amount,
+        int24 newTick
+    ) private returns (uint256) {
+        uint256[] storage trailingActives = trailingByPercentActive[poolId][
+            percent
+        ][zeroForOne];
+        for (uint i = 0; i < trailingActives.length; i++) {
+            uint256 id = trailingActives[i];
+            TrailingInfo storage trailing = trailingInfoById[id];
+            if (trailing.tickLower == newTick) {
+                // merge amount of the trailings
+                trailing.totalAmount += amount;
+                return id;
+            }
+        }
+        return 0;
+    }
+
     /// @notice Trailing need to follow actual price
     /// so we readjust them between tick change
     /// if tick grow we update trailing based on currency 0
@@ -421,6 +435,7 @@ contract TrailingStopHook is UniV4UserHook, ERC6909, Test {
             uint256[] memory activeTrailings = trailingByPercentActive[poolId][
                 percent
             ][zeroForOne];
+
             for (uint j = 0; j < activeTrailings.length; j++) {
                 // calcul tick lower by percent
                 int24 tickLower = newTick - ((100 * int24(percent)) / 10_000);
@@ -435,12 +450,26 @@ contract TrailingStopHook is UniV4UserHook, ERC6909, Test {
 
                 // update trailing by tick id too
                 deleteFromTicks(trailingId, poolId, oldTick, zeroForOne);
-                trailingByTicksId[poolId][tickLower][zeroForOne].push(
-                    trailingId
+                // try to merge it
+                uint256 mergeId = mergeTrailing(
+                    poolId,
+                    percent,
+                    zeroForOne,
+                    trailing.totalAmount,
+                    tickLower
                 );
+                if (mergeId == 0) {
+                    trailingByTicksId[poolId][tickLower][zeroForOne].push(
+                        trailingId
+                    );
 
-                // update data in current trailing
-                trailing.tickLower = tickLower;
+                    // update tick in current trailing if not merged
+                    trailing.tickLower = tickLower;
+                } else {
+                    trailing.newId = mergeId;
+                    // delete from active if the trailing was merged
+                    deleteFromActive(trailingId, poolId, percent, zeroForOne);
+                }
             }
         }
     }
