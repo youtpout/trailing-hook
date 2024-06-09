@@ -209,11 +209,6 @@ contract TrailingStopHook is UniV4UserHook, ERC6909, Test {
             stopLossSwapParams,
             address(this)
         );
-        // remove this position once is fullfilled
-
-        // capital from the swap is redeemable by position holders
-        //uint256 tokenId = getTokenId(poolKey, triggerTick, percent, zeroForOne);
-
         // TODO: safe casting
         // balance delta returned by .swap(): negative amount indicates outflow from pool (and inflow into contract)
         // therefore, we need to invert
@@ -221,20 +216,25 @@ contract TrailingStopHook is UniV4UserHook, ERC6909, Test {
             ? uint256(int256(-delta.amount1()))
             : uint256(int256(-delta.amount0()));
 
-        uint256[] memory trailingIds = trailingByTicksId[poolKey.toId()][
-            triggerTick
-        ][zeroForOne];
+        PoolId poolId = poolKey.toId();
+
+        uint256[] memory trailingIds = trailingByTicksId[poolId][triggerTick][
+            zeroForOne
+        ];
 
         for (uint i = 0; i < trailingIds.length; i++) {
             uint256 trailingId = trailingIds[i];
             TrailingInfo storage trailing = trailingInfoById[trailingId];
-            // todo correct calculation
+            // filled amount = amount out * balance trailing / amount in
+            uint256 filledAmount = amount.mulDivDown(trailing.totalAmount, swapAmount);
             trailing.filledAmount += amount;
 
             // delete this trailing from list of active trailings
-            uint256[] storage trailingActives = trailingByPercentActive[
-                poolKey.toId()
-            ][trailing.percent][zeroForOne];
+            uint256[] storage trailingActives = trailingByPercentActive[poolId][
+                trailing.percent
+            ][zeroForOne];
+
+            // remove this position once is fullfilled
             for (uint j = 0; j < trailingActives.length; j++) {
                 if (trailingActives[j] == trailingId) {
                     trailingActives[j] = trailingActives[
@@ -247,7 +247,8 @@ contract TrailingStopHook is UniV4UserHook, ERC6909, Test {
         }
 
         // delete informations once trailing is fullfilled
-        delete trailingByTicksId[poolKey.toId()][triggerTick][zeroForOne];
+        delete trailingByTicksId[poolId][triggerTick][zeroForOne];
+        delete trailingPositions[poolId][triggerTick][zeroForOne];
     }
 
     // -- Trailing stop User Facing Functions -- //
@@ -370,7 +371,7 @@ contract TrailingStopHook is UniV4UserHook, ERC6909, Test {
             : Currency.unwrap(data.poolKey.currency0);
 
         // effects: burn the token
-        // amountOut = filled amount * (user balance / total amount)
+        // amountOut = user balance * filledAmount / total amount
         uint256 amountOut = receiptBalance.mulDivDown(
             data.filledAmount,
             data.totalAmount
