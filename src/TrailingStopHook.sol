@@ -56,12 +56,11 @@ contract TrailingStopHook is UniV4UserHook, ERC6909, Test {
         public trailingPositions;
     mapping(PoolId poolId => mapping(int24 tick => mapping(bool zeroForOne => uint256[])))
         public trailingByTicksId;
-
     mapping(PoolId => mapping(uint24 percent => mapping(bool zeroForOne => uint256[])))
         public trailingByPercentActive;
 
     // -- ERC6909 state -- //
-    uint256 lastTokenId = 1;
+    uint256 lastTokenId = 0;
     mapping(uint256 tokenId => TrailingInfo) trailingInfoById;
 
     struct TrailingInfo {
@@ -280,7 +279,7 @@ contract TrailingStopHook is UniV4UserHook, ERC6909, Test {
         uint24 percent,
         uint256 amountIn,
         bool zeroForOne
-    ) external returns (int24 tickLower) {
+    ) external returns (int24 tickLower, uint256 tokenId) {
         // between 1 and 10%, with a step of 1
         if (percent < 10_000 || percent > 100_000 || percent % 10_000 != 0) {
             revert IncorrectPercentage(percent);
@@ -301,7 +300,7 @@ contract TrailingStopHook is UniV4UserHook, ERC6909, Test {
         trailingPositions[poolKey.toId()][tickLower][zeroForOne] += amountIn;
 
         // found corresponding trailing in existing list
-        uint256 tokenId = mergeTrailing(
+        tokenId = mergeTrailing(
             poolId,
             percent,
             zeroForOne,
@@ -426,6 +425,22 @@ contract TrailingStopHook is UniV4UserHook, ERC6909, Test {
             return getActiveTrailing(trailing.newId);
         }
         return id;
+    }
+
+    function countActiveTrailingByPercent(
+        PoolId poolId,
+        uint24 percent,
+        bool zeroForOne
+    ) public view returns (uint256) {
+        return trailingByPercentActive[poolId][percent][zeroForOne].length;
+    }
+
+    function countTrailingByTicks(
+        PoolId poolId,
+        int24 tick,
+        bool zeroForOne
+    ) public view returns (uint256) {
+        return trailingByTicksId[poolId][tick][zeroForOne].length;
     }
 
     /// @notice Try to find a trailing who match the trailing pass in parameters

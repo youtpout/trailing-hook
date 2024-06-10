@@ -132,29 +132,81 @@ contract TrailingStopTest is Test, Deployers {
         //trailingHook.trailingPositions(poolId,)
         (, int24 tickSlot, , ) = StateLibrary.getSlot0(manager, key.toId());
         int24 tickPercent = tickSlot - ((100 * int24(onePercent)) / 10_000);
-        int24 currentTick = getTickLower(tickPercent, key.tickSpacing);
+        int24 tickLower = getTickLower(tickPercent, key.tickSpacing);
 
-        console2.log("tickLower", int256(currentTick));
+        assertEq(tickLower, -100);
 
         uint256 amount = trailingHook.trailingPositions(
             poolId,
-            currentTick,
+            tickLower,
             true
         );
         assertEq(0, amount);
 
+        uint256 activeLength = trailingHook.countActiveTrailingByPercent(
+            poolId,
+            onePercent,
+            true
+        );
+
+        uint256 tickLength = trailingHook.countTrailingByTicks(
+            poolId,
+            tickLower,
+            true
+        );
+
+        assertEq(0, activeLength);
+        assertEq(0, tickLength);
+
         vm.startPrank(bob);
         IERC20(token0).approve(address(trailingHook), 1 ether);
         // 10_000 for 1%
-        trailingHook.placeTrailing(key, onePercent, 0.5 ether, true);
+        (int24 tickTrailing, uint256 trailingId) = trailingHook.placeTrailing(
+            key,
+            onePercent,
+            0.5 ether,
+            true
+        );
         vm.stopPrank();
+
+        assertEq(trailingId, 1);
+        assertEq(tickTrailing, tickLower);
 
         uint256 amountAfter = trailingHook.trailingPositions(
             poolId,
-            currentTick,
+            tickLower,
             true
         );
         assertEq(0.5 ether, amountAfter);
+
+        uint256 balance = trailingHook.balanceOf(bob, trailingId);
+        assertEq(0.5 ether, balance);
+
+        activeLength = trailingHook.countActiveTrailingByPercent(
+            poolId,
+            onePercent,
+            true
+        );
+        uint256 idActive = trailingHook.trailingByPercentActive(
+            poolId,
+            onePercent,
+            true,
+            0
+        );
+
+        assertEq(1, activeLength);
+        assertEq(1, idActive);
+
+        tickLength = trailingHook.countTrailingByTicks(poolId, tickLower, true);
+        uint256 idTickList = trailingHook.trailingByTicksId(
+            poolId,
+            tickLower,
+            true,
+            0
+        );
+
+        assertEq(tickLength, 1);
+        assertEq(idTickList, 1);
     }
 
     function getTickLower(
