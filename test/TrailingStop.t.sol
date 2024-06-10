@@ -12,16 +12,15 @@ import {PoolId, PoolIdLibrary} from "v4-core/src/types/PoolId.sol";
 import {CurrencyLibrary, Currency} from "v4-core/src/types/Currency.sol";
 import {PoolSwapTest} from "v4-core/src/test/PoolSwapTest.sol";
 import {Deployers} from "v4-core/test/utils/Deployers.sol";
-import {TrailingHook} from "../src/TrailingHook.sol";
+import {TrailingStopHook} from "../src/TrailingStopHook.sol";
 import {HookMiner} from "./utils/HookMiner.sol";
 
-contract TrailingTest is Test, Deployers {
+contract TrailingStopTest is Test, Deployers {
     using PoolIdLibrary for PoolKey;
     using CurrencyLibrary for Currency;
 
-    TrailingHook trailing;
+    TrailingStopHook trailing;
     PoolId poolId;
-    int24 constant MAX_TICK_SPACING = 32767;
 
     function setUp() public {
         // creates the pool manager, utility routers, and test tokens
@@ -33,17 +32,17 @@ contract TrailingTest is Test, Deployers {
             Hooks.BEFORE_INITIALIZE_FLAG |
                 Hooks.AFTER_INITIALIZE_FLAG |
                 Hooks.BEFORE_SWAP_FLAG |
-                Hooks.AFTER_SWAP_FLAG |
-                Hooks.BEFORE_ADD_LIQUIDITY_FLAG |
-                Hooks.BEFORE_REMOVE_LIQUIDITY_FLAG
+                Hooks.AFTER_SWAP_FLAG
         );
         (address hookAddress, bytes32 salt) = HookMiner.find(
             address(this),
             flags,
-            type(TrailingHook).creationCode,
+            type(TrailingStopHook).creationCode,
             abi.encode(address(manager))
         );
-        trailing = new TrailingHook{salt: salt}(IPoolManager(address(manager)));
+        trailing = new TrailingStopHook{salt: salt}(
+            IPoolManager(address(manager))
+        );
         require(
             address(trailing) == hookAddress,
             "TrailingTest: hook address mismatch"
@@ -54,7 +53,8 @@ contract TrailingTest is Test, Deployers {
             currency0,
             currency1,
             3000,
-            MAX_TICK_SPACING,
+            // this hook works only with a tick spacing of 50
+            50,
             IHooks(address(trailing))
         );
         poolId = key.toId();
@@ -63,29 +63,19 @@ contract TrailingTest is Test, Deployers {
         // Provide liquidity to the pool
         modifyLiquidityRouter.modifyLiquidity(
             key,
-            IPoolManager.ModifyLiquidityParams(
-                -MAX_TICK_SPACING,
-                MAX_TICK_SPACING,
-                10 ether,
-                0
-            ),
+            IPoolManager.ModifyLiquidityParams(-50, 50, 10 ether, 0),
+            ZERO_BYTES
+        );
+        modifyLiquidityRouter.modifyLiquidity(
+            key,
+            IPoolManager.ModifyLiquidityParams(-100, 100, 10 ether, 0),
             ZERO_BYTES
         );
         modifyLiquidityRouter.modifyLiquidity(
             key,
             IPoolManager.ModifyLiquidityParams(
-                -2 * MAX_TICK_SPACING,
-                2 * MAX_TICK_SPACING,
-                10 ether,
-                0
-            ),
-            ZERO_BYTES
-        );
-        modifyLiquidityRouter.modifyLiquidity(
-            key,
-            IPoolManager.ModifyLiquidityParams(
-                TickMath.minUsableTick(MAX_TICK_SPACING),
-                TickMath.maxUsableTick(MAX_TICK_SPACING),
+                TickMath.minUsableTick(50),
+                TickMath.maxUsableTick(50),
                 10 ether,
                 0
             ),
@@ -113,12 +103,7 @@ contract TrailingTest is Test, Deployers {
         int256 liquidityDelta = -1e18;
         modifyLiquidityRouter.modifyLiquidity(
             key,
-            IPoolManager.ModifyLiquidityParams(
-                -MAX_TICK_SPACING,
-                MAX_TICK_SPACING,
-                liquidityDelta,
-                0
-            ),
+            IPoolManager.ModifyLiquidityParams(-50, 50, liquidityDelta, 0),
             ZERO_BYTES
         );
     }
