@@ -270,7 +270,7 @@ contract TrailingStopTest is Test, Deployers {
         );
         vm.stopPrank();
 
-        // the trailing is executed in inverse ordre for security reason (avoids abuse/attack vectors)
+        // the trailing is executed in inverse order for security reason (avoids abuse/attack vectors)
 
         bool zeroForOne = true;
         int256 amountSpecified = -2e18; // negative number indicates exact input swap!
@@ -320,6 +320,121 @@ contract TrailingStopTest is Test, Deployers {
         assertEq(0, amount);
         assertEq(0, activeLength);
         assertEq(0, tickLength);
+    }
+
+    function testMultipleTrailing() public {
+        address token0 = Currency.unwrap(currency0);
+        deal(token0, bob, 1 ether);
+
+        uint24 onePercent = 10_000;
+        uint24 fivePercent = 50_000;
+
+        //trailingHook.trailingPositions(poolId,)
+        (, int24 tickSlot, , ) = StateLibrary.getSlot0(manager, key.toId());
+        int24 tickPercent = tickSlot - ((100 * int24(onePercent)) / 10_000);
+        int24 tickLower = getTickLower(tickPercent, key.tickSpacing);
+
+        int24 tickPercent5 = tickSlot - ((100 * int24(fivePercent)) / 10_000);
+        int24 tickLower5 = getTickLower(tickPercent5, key.tickSpacing);
+
+        vm.startPrank(bob);
+        IERC20(token0).approve(address(trailingHook), 1 ether);
+        // 10_000 for 1%
+        trailingHook.placeTrailing(key, onePercent, 0.5 ether, true);
+        trailingHook.placeTrailing(key, fivePercent, 0.3 ether, true);
+        vm.stopPrank();
+
+        // check trailing was deleted from the mapping
+        uint256 amount = trailingHook.trailingPositions(
+            poolId,
+            tickLower,
+            true
+        );
+        uint256 amount5percent = trailingHook.trailingPositions(
+            poolId,
+            tickPercent5,
+            true
+        );
+        uint256 activeLength = trailingHook.countActiveTrailingByPercent(
+            poolId,
+            onePercent,
+            true
+        );
+        uint256 activeLength5 = trailingHook.countActiveTrailingByPercent(
+            poolId,
+            fivePercent,
+            true
+        );
+
+        uint256 tickLength = trailingHook.countTrailingByTicks(
+            poolId,
+            tickLower,
+            true
+        );
+        uint256 tickLength5 = trailingHook.countTrailingByTicks(
+            poolId,
+            tickLower5,
+            true
+        );
+
+        // retrieve these trailings
+        assertEq(0.5 ether, amount);
+        assertEq(0.3 ether, amount5percent);
+        assertEq(1, activeLength);
+        assertEq(1, tickLength);
+        assertEq(1, activeLength5);
+        assertEq(1, tickLength5);
+        assertEq(trailingHook.lastTokenId(), 2);
+    }
+
+    function testMergeTrailing() public {
+        address token0 = Currency.unwrap(currency0);
+        deal(token0, bob, 1 ether);
+        deal(token0, alice, 1 ether);
+
+        uint24 onePercent = 10_000;
+
+        //trailingHook.trailingPositions(poolId,)
+        (, int24 tickSlot, , ) = StateLibrary.getSlot0(manager, key.toId());
+        int24 tickPercent = tickSlot - ((100 * int24(onePercent)) / 10_000);
+        int24 tickLower = getTickLower(tickPercent, key.tickSpacing);
+
+        vm.startPrank(bob);
+        IERC20(token0).approve(address(trailingHook), 1 ether);
+        // 10_000 for 1%
+        trailingHook.placeTrailing(key, onePercent, 0.5 ether, true);
+        vm.stopPrank();
+
+        vm.startPrank(alice);
+        IERC20(token0).approve(address(trailingHook), 1 ether);
+        // 10_000 for 1%
+        trailingHook.placeTrailing(key, onePercent, 0.2 ether, true);
+        vm.stopPrank();
+
+        // check trailing was deleted from the mapping
+        uint256 amount = trailingHook.trailingPositions(
+            poolId,
+            tickLower,
+            true
+        );
+        uint256 activeLength = trailingHook.countActiveTrailingByPercent(
+            poolId,
+            onePercent,
+            true
+        );
+
+        uint256 tickLength = trailingHook.countTrailingByTicks(
+            poolId,
+            tickLower,
+            true
+        );
+
+        // retrieve these trailings
+        assertEq(0.7 ether, amount);
+        // only one trailing in mapping because these was merged
+        assertEq(1, activeLength);
+        assertEq(1, tickLength);
+        assertEq(trailingHook.lastTokenId(), 1);
     }
 
     function getTickLower(

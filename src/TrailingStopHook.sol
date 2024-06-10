@@ -62,8 +62,8 @@ contract TrailingStopHook is BaseHook, ERC6909, Test {
         public trailingByPercentActive;
 
     // -- ERC6909 state -- //
-    uint256 lastTokenId = 0;
-    mapping(uint256 tokenId => TrailingInfo) trailingInfoById;
+    uint256 public lastTokenId = 0;
+    mapping(uint256 tokenId => TrailingInfo) public trailingInfoById;
 
     struct TrailingInfo {
         PoolKey poolKey;
