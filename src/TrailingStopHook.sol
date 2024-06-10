@@ -172,6 +172,9 @@ contract TrailingStopHook is UniV4UserHook, ERC6909, Test {
         int24 currentTick = getTickLower(tick, key.tickSpacing);
         tick = prevTick;
 
+        console2.log("afterSwap currentTick", currentTick);
+        console2.log("tick slot 0", tick);
+        console2.log("prevTick", prevTick);
         uint256 swapAmounts;
 
         // fill trailing in the opposite direction of the swap
@@ -181,6 +184,7 @@ contract TrailingStopHook is UniV4UserHook, ERC6909, Test {
         // TODO: test for off by one because of inequality
         if (prevTick < currentTick) {
             for (; tick < currentTick; ) {
+                console2.log("prevTick", tick);
                 swapAmounts = trailingPositions[key.toId()][tick][
                     stopLossZeroForOne
                 ];
@@ -193,6 +197,7 @@ contract TrailingStopHook is UniV4UserHook, ERC6909, Test {
             }
         } else {
             for (; currentTick < tick; ) {
+                console2.log("prevTick", tick);
                 swapAmounts = trailingPositions[key.toId()][tick][
                     stopLossZeroForOne
                 ];

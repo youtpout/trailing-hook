@@ -248,6 +248,52 @@ contract TrailingStopTest is Test, Deployers {
         assertEq(1 ether, balance0);
     }
 
+    function testExecuteTrailing() public {
+        address token0 = Currency.unwrap(currency0);
+        deal(token0, bob, 1 ether);
+
+        uint24 onePercent = 10_000;
+
+        //trailingHook.trailingPositions(poolId,)
+        (, int24 tickSlot, , ) = StateLibrary.getSlot0(manager, key.toId());
+        int24 tickPercent = tickSlot - ((100 * int24(onePercent)) / 10_000);
+        int24 tickLower = getTickLower(tickPercent, key.tickSpacing);
+
+        vm.startPrank(bob);
+        IERC20(token0).approve(address(trailingHook), 1 ether);
+        // 10_000 for 1%
+        (int24 tickTrailing, uint256 trailingId) = trailingHook.placeTrailing(
+            key,
+            onePercent,
+            0.5 ether,
+            true
+        );
+        vm.stopPrank();
+
+        bool zeroForOne = true;
+        int256 amountSpecified = -2e18; // negative number indicates exact input swap!
+        BalanceDelta swapDelta = swap(
+            key,
+            zeroForOne,
+            amountSpecified,
+            ZERO_BYTES
+        );
+
+        zeroForOne = false;
+        amountSpecified = -2e18; // negative number indicates exact input swap!
+        swapDelta = swap(key, zeroForOne, amountSpecified, ZERO_BYTES);
+
+        vm.startPrank(bob);
+        //vm.expectRevert();
+        trailingHook.removeTrailing(1);
+        vm.stopPrank();
+        // user retrieve his token
+        uint256 balance0 = IERC20(token0).balanceOf(bob);
+        uint256 balance = trailingHook.balanceOf(bob, trailingId);
+        assertEq(0, balance);
+        assertEq(1 ether, balance0);
+    }
+
     function getTickLower(
         int24 tick,
         int24 tickSpacing
