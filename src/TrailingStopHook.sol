@@ -183,7 +183,6 @@ contract TrailingStopHook is BaseHook, ERC6909, Test {
             return (TrailingStopHook.afterSwap.selector, 0);
         }
 
-        console.log("after swap");
         int24 prevTick = tickLowerLasts[key.toId()];
         (, int24 tick, , ) = StateLibrary.getSlot0(poolManager, key.toId());
         int24 currentTick = getTickLower(tick, key.tickSpacing);
@@ -234,28 +233,22 @@ contract TrailingStopHook is BaseHook, ERC6909, Test {
         IPoolManager.SwapParams memory stopLossSwapParams = IPoolManager
             .SwapParams({
                 zeroForOne: zeroForOne,
+                // negative for exact input
                 amountSpecified: -int256(swapAmount),
                 sqrtPriceLimitX96: zeroForOne
                     ? MIN_PRICE_LIMIT
                     : MAX_PRICE_LIMIT
             });
-        console.log("swap fill");
-        // TODO: may need a way to halt to prevent perpetual stop loss triggers
+
         BalanceDelta delta = handleSwap(
             poolKey,
             stopLossSwapParams,
             address(this)
         );
-        // TODO: safe casting
-        // balance delta returned by .swap(): negative amount indicates outflow from pool (and inflow into contract)
-        // therefore, we need to invert
+        // these amount was positive or they are a mistake somewhere
         uint256 amount = zeroForOne
             ? uint256(int256(delta.amount1()))
             : uint256(int256(delta.amount0()));
-
-        console.log("zeroForOne", zeroForOne);
-        console2.log("amount 0", delta.amount0());
-        console2.log("amount 1", delta.amount1());
 
         PoolId poolId = poolKey.toId();
 
@@ -293,7 +286,6 @@ contract TrailingStopHook is BaseHook, ERC6909, Test {
         // delete informations once trailing is fullfilled
         delete trailingByTicksId[poolId][triggerTick][zeroForOne];
         delete trailingPositions[poolId][triggerTick][zeroForOne];
-        console.log("all deleted");
     }
 
     // -- Trailing stop User Facing Functions -- //
@@ -547,7 +539,7 @@ contract TrailingStopHook is BaseHook, ERC6909, Test {
         }
     }
 
-      function handleSwap(
+    function handleSwap(
         PoolKey memory key,
         IPoolManager.SwapParams memory params,
         address sender

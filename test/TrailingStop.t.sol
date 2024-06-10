@@ -270,6 +270,8 @@ contract TrailingStopTest is Test, Deployers {
         );
         vm.stopPrank();
 
+        // the trailing is executed in inverse ordre for security reason (avoids abuse/attack vectors)
+
         bool zeroForOne = true;
         int256 amountSpecified = -2e18; // negative number indicates exact input swap!
         BalanceDelta swapDelta = swap(
@@ -289,13 +291,35 @@ contract TrailingStopTest is Test, Deployers {
             abi.encodeWithSelector(TrailingStopHook.AlreadyExecuted.selector, 1)
         );
         trailingHook.removeTrailing(1);
-        vm.stopPrank();
 
-        // // user retrieve his token
-        // uint256 balance0 = IERC20(token0).balanceOf(bob);
-        // uint256 balance = trailingHook.balanceOf(bob, trailingId);
-        // assertEq(0, balance);
-        // assertEq(1 ether, balance0);
+        // user claim his money
+        trailingHook.claim(1);
+        vm.stopPrank();
+        uint256 balance1 = IERC20(token0).balanceOf(bob);
+        uint256 balance = trailingHook.balanceOf(bob, trailingId);
+        assertEq(0, balance);
+        assertGt(balance1, 0.4 ether);
+
+        // check trailing was deleted from the mapping
+        uint256 amount = trailingHook.trailingPositions(
+            poolId,
+            tickLower,
+            true
+        );
+        uint256 activeLength = trailingHook.countActiveTrailingByPercent(
+            poolId,
+            onePercent,
+            true
+        );
+
+        uint256 tickLength = trailingHook.countTrailingByTicks(
+            poolId,
+            tickLower,
+            true
+        );
+        assertEq(0, amount);
+        assertEq(0, activeLength);
+        assertEq(0, tickLength);
     }
 
     function getTickLower(
