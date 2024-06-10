@@ -31,6 +31,26 @@ contract TrailingStopHook is UniV4UserHook, ERC6909, Test {
     error NotExecuted(uint256 trailingId);
     error NoAmount(uint256 tokenId);
 
+    event AddTrailing(
+        address indexed sender,
+        uint256 indexed tokenId,
+        uint256 amount,
+        TrailingInfo trailingAdded
+    );
+
+    event CancelTrailing(
+        address indexed sender,
+        uint256 indexed tokenId,
+        uint256 amount
+    );
+
+    event ClaimTrailing(
+        address indexed sender,
+        uint256 indexed tokenId,
+        uint256 amountDeposited,
+        uint256 amountOut
+    );
+
     mapping(PoolId poolId => int24 tickLower) public tickLowerLasts;
     mapping(PoolId poolId => mapping(int24 tick => mapping(bool zeroForOne => uint256 amount)))
         public trailingPositions;
@@ -226,7 +246,10 @@ contract TrailingStopHook is UniV4UserHook, ERC6909, Test {
             uint256 trailingId = trailingIds[i];
             TrailingInfo storage trailing = trailingInfoById[trailingId];
             // filled amount = amount out * balance trailing / amount in
-            uint256 filledAmount = amount.mulDivDown(trailing.totalAmount, swapAmount);
+            uint256 filledAmount = amount.mulDivDown(
+                trailing.totalAmount,
+                swapAmount
+            );
             trailing.filledAmount += amount;
 
             // delete this trailing from list of active trailings
@@ -305,6 +328,13 @@ contract TrailingStopHook is UniV4UserHook, ERC6909, Test {
 
         // mint the receipt token
         _mint(msg.sender, tokenId, amountIn);
+
+        emit AddTrailing(
+            msg.sender,
+            tokenId,
+            amountIn,
+            trailingInfoById[tokenId]
+        );
     }
 
     // if user want to remove a trailing
@@ -349,6 +379,8 @@ contract TrailingStopHook is UniV4UserHook, ERC6909, Test {
 
         // reimbourse the user
         IERC20(token).transfer(msg.sender, balanceUser);
+
+        emit CancelTrailing(msg.sender, id, balanceUser);
     }
 
     /// @notice the user claim after this trailing was fulffiles
@@ -381,6 +413,8 @@ contract TrailingStopHook is UniV4UserHook, ERC6909, Test {
 
         // interaction: transfer the underlying to the caller
         IERC20(token).transfer(msg.sender, amountOut);
+
+        emit ClaimTrailing(msg.sender, tokenId, receiptBalance, amountOut);
     }
 
     // ---------- //

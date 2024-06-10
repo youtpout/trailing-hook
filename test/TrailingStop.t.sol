@@ -14,10 +14,15 @@ import {PoolSwapTest} from "v4-core/src/test/PoolSwapTest.sol";
 import {Deployers} from "v4-core/test/utils/Deployers.sol";
 import {TrailingStopHook} from "../src/TrailingStopHook.sol";
 import {HookMiner} from "./utils/HookMiner.sol";
+import {IERC20} from "forge-std/interfaces/IERC20.sol";
 
 contract TrailingStopTest is Test, Deployers {
     using PoolIdLibrary for PoolKey;
     using CurrencyLibrary for Currency;
+
+    address bob = makeAddr("bob");
+    address alice = makeAddr("alice");
+    address dylan = makeAddr("dylan");
 
     TrailingStopHook trailing;
     PoolId poolId;
@@ -83,7 +88,7 @@ contract TrailingStopTest is Test, Deployers {
         );
     }
 
-    function testTrailingsHooks() public {
+    function testSwap() public {
         // Perform a test swap //
         bool zeroForOne = true;
         int256 amountSpecified = -1e18; // negative number indicates exact input swap!
@@ -96,9 +101,7 @@ contract TrailingStopTest is Test, Deployers {
         // ------------------- //
     }
 
-    function testLiquidityHooks() public {
-        // positions were created in setup()
-
+    function testModifyLiquidityHooks() public {
         // remove liquidity
         int256 liquidityDelta = -1e18;
         modifyLiquidityRouter.modifyLiquidity(
@@ -106,5 +109,26 @@ contract TrailingStopTest is Test, Deployers {
             IPoolManager.ModifyLiquidityParams(-50, 50, liquidityDelta, 0),
             ZERO_BYTES
         );
+    }
+
+    function testIncorrectTickSpacing() public {
+        // remove liquidity
+        int256 liquidityDelta = -1e18;
+        vm.expectRevert();
+        modifyLiquidityRouter.modifyLiquidity(
+            key,
+            IPoolManager.ModifyLiquidityParams(-60, 60, liquidityDelta, 0),
+            ZERO_BYTES
+        );
+    }
+
+    function testPlaceTrailing() public {
+        address token0 = Currency.unwrap(currency0);
+        deal(token0, bob, 1 ether);
+        vm.startPrank(bob);
+        IERC20(token0).approve(address(trailing), 1 ether);
+        // 10_000 for 1%
+        trailing.placeTrailing(key, 10_000, 0.5 ether, true);
+        vm.stopPrank();
     }
 }
