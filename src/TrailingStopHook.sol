@@ -280,7 +280,7 @@ contract TrailingStopHook is UniV4UserHook, ERC6909, Test {
         uint24 percent,
         uint256 amountIn,
         bool zeroForOne
-    ) external returns (int24 tick) {
+    ) external returns (int24 tickLower) {
         // between 1 and 10%, with a step of 1
         if (percent < 10_000 || percent > 100_000 || percent % 10_000 != 0) {
             revert IncorrectPercentage(percent);
@@ -290,7 +290,7 @@ contract TrailingStopHook is UniV4UserHook, ERC6909, Test {
         // calculate ticklower base on percent trailing stop, 1% price movement equal 100 ticks change
         int24 tickPercent = tickSlot - ((100 * int24(percent)) / 10_000);
         // round down according to tickSpacing
-        int24 tickLower = getTickLower(tickPercent, poolKey.tickSpacing);
+        tickLower = getTickLower(tickPercent, poolKey.tickSpacing);
 
         // transfer token to this contract
         address token = zeroForOne
@@ -298,7 +298,7 @@ contract TrailingStopHook is UniV4UserHook, ERC6909, Test {
             : Currency.unwrap(poolKey.currency1);
         IERC20(token).transferFrom(msg.sender, address(this), amountIn);
 
-        trailingPositions[poolKey.toId()][tick][zeroForOne] += amountIn;
+        trailingPositions[poolKey.toId()][tickLower][zeroForOne] += amountIn;
 
         // found corresponding trailing in existing list
         uint256 tokenId = mergeTrailing(

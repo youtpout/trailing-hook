@@ -15,6 +15,7 @@ import {Deployers} from "v4-core/test/utils/Deployers.sol";
 import {TrailingStopHook} from "../src/TrailingStopHook.sol";
 import {HookMiner} from "./utils/HookMiner.sol";
 import {IERC20} from "forge-std/interfaces/IERC20.sol";
+import {StateLibrary} from "v4-core/src/libraries/StateLibrary.sol";
 
 contract TrailingStopTest is Test, Deployers {
     using PoolIdLibrary for PoolKey;
@@ -24,7 +25,7 @@ contract TrailingStopTest is Test, Deployers {
     address alice = makeAddr("alice");
     address dylan = makeAddr("dylan");
 
-    TrailingStopHook trailing;
+    TrailingStopHook trailingHook;
     PoolId poolId;
 
     function setUp() public {
@@ -45,11 +46,11 @@ contract TrailingStopTest is Test, Deployers {
             type(TrailingStopHook).creationCode,
             abi.encode(address(manager))
         );
-        trailing = new TrailingStopHook{salt: salt}(
+        trailingHook = new TrailingStopHook{salt: salt}(
             IPoolManager(address(manager))
         );
         require(
-            address(trailing) == hookAddress,
+            address(trailingHook) == hookAddress,
             "TrailingTest: hook address mismatch"
         );
 
@@ -60,7 +61,7 @@ contract TrailingStopTest is Test, Deployers {
             3000,
             // this hook works only with a tick spacing of 50
             50,
-            IHooks(address(trailing))
+            IHooks(address(trailingHook))
         );
         poolId = key.toId();
         manager.initialize(key, SQRT_PRICE_1_1, ZERO_BYTES);
@@ -125,10 +126,43 @@ contract TrailingStopTest is Test, Deployers {
     function testPlaceTrailing() public {
         address token0 = Currency.unwrap(currency0);
         deal(token0, bob, 1 ether);
+
+        uint24 onePercent = 10_000;
+
+        //trailingHook.trailingPositions(poolId,)
+        (, int24 tickSlot, , ) = StateLibrary.getSlot0(manager, key.toId());
+        int24 tickPercent = tickSlot - ((100 * int24(onePercent)) / 10_000);
+        int24 currentTick = getTickLower(tickPercent, key.tickSpacing);
+
+        console2.log("tickLower", int256(currentTick));
+
+        uint256 amount = trailingHook.trailingPositions(
+            poolId,
+            currentTick,
+            true
+        );
+        assertEq(0, amount);
+
         vm.startPrank(bob);
-        IERC20(token0).approve(address(trailing), 1 ether);
+        IERC20(token0).approve(address(trailingHook), 1 ether);
         // 10_000 for 1%
-        trailing.placeTrailing(key, 10_000, 0.5 ether, true);
+        trailingHook.placeTrailing(key, onePercent, 0.5 ether, true);
         vm.stopPrank();
+
+        uint256 amountAfter = trailingHook.trailingPositions(
+            poolId,
+            currentTick,
+            true
+        );
+        assertEq(0.5 ether, amountAfter);
+    }
+
+    function getTickLower(
+        int24 tick,
+        int24 tickSpacing
+    ) private pure returns (int24) {
+        int24 compressed = tick / tickSpacing;
+        if (tick < 0 && tick % tickSpacing != 0) compressed--; // round towards negative infinity
+        return compressed * tickSpacing;
     }
 }
