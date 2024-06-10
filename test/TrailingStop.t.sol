@@ -283,15 +283,19 @@ contract TrailingStopTest is Test, Deployers {
         amountSpecified = -2e18; // negative number indicates exact input swap!
         swapDelta = swap(key, zeroForOne, amountSpecified, ZERO_BYTES);
 
+        // we can't cancel this hook because it was executed
         vm.startPrank(bob);
-        //vm.expectRevert();
+        vm.expectRevert(
+            abi.encodeWithSelector(TrailingStopHook.AlreadyExecuted.selector, 1)
+        );
         trailingHook.removeTrailing(1);
         vm.stopPrank();
-        // user retrieve his token
-        uint256 balance0 = IERC20(token0).balanceOf(bob);
-        uint256 balance = trailingHook.balanceOf(bob, trailingId);
-        assertEq(0, balance);
-        assertEq(1 ether, balance0);
+
+        // // user retrieve his token
+        // uint256 balance0 = IERC20(token0).balanceOf(bob);
+        // uint256 balance = trailingHook.balanceOf(bob, trailingId);
+        // assertEq(0, balance);
+        // assertEq(1 ether, balance0);
     }
 
     function getTickLower(

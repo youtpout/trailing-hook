@@ -9,18 +9,18 @@ import {PoolId, PoolIdLibrary} from "v4-core/src/types/PoolId.sol";
 import {BalanceDelta} from "v4-core/src/types/BalanceDelta.sol";
 import {CurrencyLibrary, Currency} from "v4-core/src/types/Currency.sol";
 import {TickMath} from "v4-core/src/libraries/TickMath.sol";
-import {UniV4UserHook} from "./UniV4UserHook.sol";
 import {FixedPointMathLib} from "solmate/utils/FixedPointMathLib.sol";
 import {PoolKey} from "v4-core/src/types/PoolKey.sol";
 import {StateLibrary} from "v4-core/src/libraries/StateLibrary.sol";
 import {ERC6909} from "v4-core/src/ERC6909.sol";
 import {BeforeSwapDelta, BeforeSwapDeltaLibrary} from "v4-core/src/types/BeforeSwapDelta.sol";
 import "forge-std/Test.sol";
+import {IERC20Minimal} from "v4-core/src/interfaces/external/IERC20Minimal.sol";
 
 /// @notice This hook can execute trailing stop orders between 1 and 10%, with a step of 1.
 /// Larger values limit the interest of such a hook and avoid having to manage too many data, which would be gas-consuming.
 /// Based on https://github.com/saucepoint/v4-stoploss/blob/881a13ac3451b0cdab0e19e122e889f1607520b7/src/StopLoss.sol#L17
-contract TrailingStopHook is UniV4UserHook, ERC6909, Test {
+contract TrailingStopHook is BaseHook, ERC6909, Test {
     using FixedPointMathLib for uint256;
     using PoolIdLibrary for PoolKey;
     using CurrencyLibrary for Currency;
@@ -51,6 +51,8 @@ contract TrailingStopHook is UniV4UserHook, ERC6909, Test {
         uint256 amountOut
     );
 
+    bytes constant ZERO_BYTES = new bytes(0);
+
     mapping(PoolId poolId => int24 tickLower) public tickLowerLasts;
     mapping(PoolId poolId => mapping(int24 tick => mapping(bool zeroForOne => uint256 amount)))
         public trailingPositions;
@@ -80,7 +82,7 @@ contract TrailingStopHook is UniV4UserHook, ERC6909, Test {
     uint160 public constant MIN_PRICE_LIMIT = TickMath.MIN_SQRT_PRICE + 1;
     uint160 public constant MAX_PRICE_LIMIT = TickMath.MAX_SQRT_PRICE - 1;
 
-    constructor(IPoolManager _poolManager) UniV4UserHook(_poolManager) {}
+    constructor(IPoolManager _poolManager) BaseHook(_poolManager) {}
 
     function getHookPermissions()
         public
@@ -132,7 +134,7 @@ contract TrailingStopHook is UniV4UserHook, ERC6909, Test {
     }
 
     function beforeSwap(
-        address,
+        address sender,
         PoolKey calldata key,
         IPoolManager.SwapParams calldata,
         bytes calldata
@@ -142,6 +144,15 @@ contract TrailingStopHook is UniV4UserHook, ERC6909, Test {
         poolManagerOnly
         returns (bytes4, BeforeSwapDelta, uint24)
     {
+        if (sender == address(this)) {
+            // prevent from loop call
+            return (
+                TrailingStopHook.beforeSwap.selector,
+                BeforeSwapDeltaLibrary.ZERO_DELTA,
+                0
+            );
+        }
+
         PoolId poolId = key.toId();
         (, int24 tickAfter, , ) = StateLibrary.getSlot0(poolManager, poolId);
 
@@ -161,20 +172,23 @@ contract TrailingStopHook is UniV4UserHook, ERC6909, Test {
     }
 
     function afterSwap(
-        address,
+        address sender,
         PoolKey calldata key,
         IPoolManager.SwapParams calldata params,
         BalanceDelta,
         bytes calldata
     ) external override returns (bytes4, int128) {
+        if (sender == address(this)) {
+            // prevent from loop call
+            return (TrailingStopHook.afterSwap.selector, 0);
+        }
+
+        console.log("after swap");
         int24 prevTick = tickLowerLasts[key.toId()];
         (, int24 tick, , ) = StateLibrary.getSlot0(poolManager, key.toId());
         int24 currentTick = getTickLower(tick, key.tickSpacing);
         tick = prevTick;
 
-        console2.log("afterSwap currentTick", currentTick);
-        console2.log("tick slot 0", tick);
-        console2.log("prevTick", prevTick);
         uint256 swapAmounts;
 
         // fill trailing in the opposite direction of the swap
@@ -184,7 +198,6 @@ contract TrailingStopHook is UniV4UserHook, ERC6909, Test {
         // TODO: test for off by one because of inequality
         if (prevTick < currentTick) {
             for (; tick < currentTick; ) {
-                console2.log("prevTick", tick);
                 swapAmounts = trailingPositions[key.toId()][tick][
                     stopLossZeroForOne
                 ];
@@ -197,7 +210,6 @@ contract TrailingStopHook is UniV4UserHook, ERC6909, Test {
             }
         } else {
             for (; currentTick < tick; ) {
-                console2.log("prevTick", tick);
                 swapAmounts = trailingPositions[key.toId()][tick][
                     stopLossZeroForOne
                 ];
@@ -222,13 +234,14 @@ contract TrailingStopHook is UniV4UserHook, ERC6909, Test {
         IPoolManager.SwapParams memory stopLossSwapParams = IPoolManager
             .SwapParams({
                 zeroForOne: zeroForOne,
-                amountSpecified: int256(swapAmount),
+                amountSpecified: -int256(swapAmount),
                 sqrtPriceLimitX96: zeroForOne
                     ? MIN_PRICE_LIMIT
                     : MAX_PRICE_LIMIT
             });
+        console.log("swap fill");
         // TODO: may need a way to halt to prevent perpetual stop loss triggers
-        BalanceDelta delta = UniV4UserHook.swap(
+        BalanceDelta delta = handleSwap(
             poolKey,
             stopLossSwapParams,
             address(this)
@@ -237,8 +250,12 @@ contract TrailingStopHook is UniV4UserHook, ERC6909, Test {
         // balance delta returned by .swap(): negative amount indicates outflow from pool (and inflow into contract)
         // therefore, we need to invert
         uint256 amount = zeroForOne
-            ? uint256(int256(-delta.amount1()))
-            : uint256(int256(-delta.amount0()));
+            ? uint256(int256(delta.amount1()))
+            : uint256(int256(delta.amount0()));
+
+        console.log("zeroForOne", zeroForOne);
+        console2.log("amount 0", delta.amount0());
+        console2.log("amount 1", delta.amount1());
 
         PoolId poolId = poolKey.toId();
 
@@ -276,6 +293,7 @@ contract TrailingStopHook is UniV4UserHook, ERC6909, Test {
         // delete informations once trailing is fullfilled
         delete trailingByTicksId[poolId][triggerTick][zeroForOne];
         delete trailingPositions[poolId][triggerTick][zeroForOne];
+        console.log("all deleted");
     }
 
     // -- Trailing stop User Facing Functions -- //
@@ -525,6 +543,59 @@ contract TrailingStopHook is UniV4UserHook, ERC6909, Test {
                     // delete from active if the trailing was merged
                     deleteFromActive(trailingId, poolId, percent, zeroForOne);
                 }
+            }
+        }
+    }
+
+      function handleSwap(
+        PoolKey memory key,
+        IPoolManager.SwapParams memory params,
+        address sender
+    ) private returns (BalanceDelta delta) {
+        delta = poolManager.swap(key, params, ZERO_BYTES);
+        //return delta;
+
+        if (params.zeroForOne) {
+            if (delta.amount0() < 0) {
+                if (key.currency0.isNative()) {
+                    poolManager.settle{value: uint128(-delta.amount0())}(
+                        key.currency0
+                    );
+                } else {
+                    IERC20Minimal(Currency.unwrap(key.currency0)).transfer(
+                        address(poolManager),
+                        uint128(-delta.amount0())
+                    );
+                    poolManager.settle(key.currency0);
+                }
+            }
+            if (delta.amount1() > 0) {
+                poolManager.take(
+                    key.currency1,
+                    sender,
+                    uint128(delta.amount1())
+                );
+            }
+        } else {
+            if (delta.amount1() < 0) {
+                if (key.currency1.isNative()) {
+                    poolManager.settle{value: uint128(-delta.amount1())}(
+                        key.currency1
+                    );
+                } else {
+                    IERC20Minimal(Currency.unwrap(key.currency1)).transfer(
+                        address(poolManager),
+                        uint128(-delta.amount1())
+                    );
+                    poolManager.settle(key.currency1);
+                }
+            }
+            if (delta.amount0() > 0) {
+                poolManager.take(
+                    key.currency0,
+                    sender,
+                    uint128(delta.amount0())
+                );
             }
         }
     }
