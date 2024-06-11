@@ -545,7 +545,7 @@ contract TrailingStopTest is Test, Deployers {
         vm.startPrank(alice);
         IERC20(token1).approve(address(trailingHook), 1 ether);
         // 10_000 for 1%
-        (int24 tick, uint256 tokenAlice) = trailingHook.placeTrailing(
+        (, uint256 tokenAlice) = trailingHook.placeTrailing(
             key,
             onePercent,
             0.5 ether,
@@ -586,6 +586,12 @@ contract TrailingStopTest is Test, Deployers {
         vm.startPrank(alice);
         trailingHook.claim(tokenAlice);
         vm.stopPrank();
+
+        // chef if received some token
+        uint256 balanceBob = IERC20(token1).balanceOf(bob);
+        uint256 balanceAlice = IERC20(token0).balanceOf(alice);
+        assertGt(balanceBob, 0.1 ether);
+        assertGt(balanceAlice, 0.1 ether);
     }
 
     function getTickLower(
