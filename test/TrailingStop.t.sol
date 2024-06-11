@@ -513,7 +513,7 @@ contract TrailingStopTest is Test, Deployers {
         assertEq(trailingHook.lastTokenId(), 1);
     }
 
-    function testMultipleExcutionTrailing() public {
+    function testMultipleExecutionTrailing() public {
         address token0 = Currency.unwrap(currency0);
         address token1 = Currency.unwrap(currency1);
         deal(token0, bob, 1 ether);
@@ -533,19 +533,29 @@ contract TrailingStopTest is Test, Deployers {
         vm.startPrank(bob);
         IERC20(token0).approve(address(trailingHook), 1 ether);
         // 10_000 for 1%
-        trailingHook.placeTrailing(key, onePercent, 0.5 ether, true);
+        (, uint256 tokenBob) = trailingHook.placeTrailing(
+            key,
+            onePercent,
+            0.5 ether,
+            true
+        );
         trailingHook.placeTrailing(key, fivePercent, 0.3 ether, true);
         vm.stopPrank();
 
         vm.startPrank(alice);
         IERC20(token1).approve(address(trailingHook), 1 ether);
         // 10_000 for 1%
-        trailingHook.placeTrailing(key, onePercent, 0.5 ether, false);
+        (int24 tick, uint256 tokenAlice) = trailingHook.placeTrailing(
+            key,
+            onePercent,
+            0.5 ether,
+            false
+        );
         trailingHook.placeTrailing(key, fivePercent, 0.3 ether, false);
         vm.stopPrank();
 
         // swap to execute it
-        bool zeroForOne = true;
+        bool zeroForOne = false;
         int256 amountSpecified = -2e18; // negative number indicates exact input swap!
         BalanceDelta swapDelta = swap(
             key,
@@ -554,9 +564,28 @@ contract TrailingStopTest is Test, Deployers {
             ZERO_BYTES
         );
 
-        zeroForOne = false;
+        zeroForOne = true;
         amountSpecified = -2e18; // negative number indicates exact input swap!
         swapDelta = swap(key, zeroForOne, amountSpecified, ZERO_BYTES);
+
+        zeroForOne = false;
+        amountSpecified = -3e18; // negative number indicates exact input swap!
+        swapDelta = swap(key, zeroForOne, amountSpecified, ZERO_BYTES);
+
+        zeroForOne = true;
+        amountSpecified = -4e18; // negative number indicates exact input swap!
+        swapDelta = swap(key, zeroForOne, amountSpecified, ZERO_BYTES);
+
+        vm.startPrank(bob);
+        trailingHook.claim(tokenBob);
+        //can't claim an trailing you didn't mint
+        vm.expectRevert();
+        trailingHook.claim(tokenAlice);
+        vm.stopPrank();
+
+        vm.startPrank(alice);
+        trailingHook.claim(tokenAlice);
+        vm.stopPrank();
     }
 
     function getTickLower(

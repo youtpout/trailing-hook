@@ -157,11 +157,27 @@ contract TrailingStopHook is BaseHook, ERC6909, Test {
         (, int24 tickAfter, , ) = StateLibrary.getSlot0(poolManager, poolId);
 
         int24 lastTick = tickLowerLasts[poolId];
-        int24 newTick = getTickLower(tickAfter, key.tickSpacing);
-        if (lastTick != newTick) {
+        int24 currentTick = getTickLower(tickAfter, key.tickSpacing);
+        int24 tick = lastTick;
+
+        if (lastTick != currentTick) {
             // we adjust trailing to the newer tick
-            rebalanceTrailings(poolId, lastTick, newTick);
-            setTickLowerLast(poolId, newTick);
+            if (lastTick < currentTick) {
+                for (; tick < currentTick; ) {
+                    rebalanceTrailings(poolId, tick, currentTick);
+                    unchecked {
+                        tick += key.tickSpacing;
+                    }
+                }
+            } else {
+                for (; currentTick < tick; ) {
+                    rebalanceTrailings(poolId, tick, currentTick);
+                    unchecked {
+                        tick -= key.tickSpacing;
+                    }
+                }
+            }
+            setTickLowerLast(poolId, currentTick);
         }
 
         return (
@@ -324,7 +340,8 @@ contract TrailingStopHook is BaseHook, ERC6909, Test {
             percent,
             zeroForOne,
             amountIn,
-            tickLower
+            tickLower,
+            0
         );
         if (tokenId == 0) {
             // if we don't find similar trailing we will create a new one
@@ -440,7 +457,7 @@ contract TrailingStopHook is BaseHook, ERC6909, Test {
     // -- Util functions -- //
     function getActiveTrailing(uint256 id) public view returns (uint256) {
         TrailingInfo memory trailing = trailingInfoById[id];
-        if (trailing.newId != 0) {
+        if (trailing.newId != 0 && trailing.newId != id) {
             return getActiveTrailing(trailing.newId);
         }
         return id;
@@ -471,18 +488,21 @@ contract TrailingStopHook is BaseHook, ERC6909, Test {
         uint24 percent,
         bool zeroForOne,
         uint256 amount,
-        int24 newTick
+        int24 newTick,
+        uint256 trailingId
     ) private returns (uint256) {
         uint256[] storage trailingActives = trailingByPercentActive[poolId][
             percent
         ][zeroForOne];
         for (uint i = 0; i < trailingActives.length; i++) {
             uint256 id = trailingActives[i];
-            TrailingInfo storage trailing = trailingInfoById[id];
-            if (trailing.tickLower == newTick) {
-                // merge amount of the trailings
-                trailing.totalAmount += amount;
-                return id;
+            if (trailingId != id) {
+                TrailingInfo storage trailing = trailingInfoById[id];
+                if (trailing.tickLower == newTick) {
+                    // merge amount of the trailings
+                    trailing.totalAmount += amount;
+                    return id;
+                }
             }
         }
         return 0;
@@ -530,8 +550,10 @@ contract TrailingStopHook is BaseHook, ERC6909, Test {
                     percent,
                     zeroForOne,
                     trailing.totalAmount,
-                    tickLower
+                    tickLower,
+                    trailingId
                 );
+
                 if (mergeId == 0) {
                     trailingByTicksId[poolId][tickLower][zeroForOne].push(
                         trailingId
