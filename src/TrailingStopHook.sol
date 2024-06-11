@@ -302,7 +302,11 @@ contract TrailingStopHook is BaseHook, ERC6909, Test {
         PoolId poolId = poolKey.toId();
         (, int24 tickSlot, , ) = StateLibrary.getSlot0(poolManager, poolId);
         // calculate ticklower base on percent trailing stop, 1% price movement equal 100 ticks change
-        int24 tickPercent = tickSlot - ((100 * int24(percent)) / 10_000);
+        int24 tickChange = ((100 * int24(percent)) / 10_000);
+        // change direction depend if it's zero for one
+        int24 tickPercent = zeroForOne
+            ? tickSlot - tickChange
+            : tickSlot + tickChange;
         // round down according to tickSpacing
         tickLower = getTickLower(tickPercent, poolKey.tickSpacing);
 
@@ -503,7 +507,12 @@ contract TrailingStopHook is BaseHook, ERC6909, Test {
 
             for (uint j = 0; j < activeTrailings.length; j++) {
                 // calcul tick lower by percent
-                int24 tickLower = newTick - ((100 * int24(percent)) / 10_000);
+                // calculate ticklower base on percent trailing stop, 1% price movement equal 100 ticks change
+                int24 tickChange = ((100 * int24(percent)) / 10_000);
+                // change direction depend if it's zero for one
+                int24 tickLower = zeroForOne
+                    ? newTick - tickChange
+                    : newTick + tickChange;
                 uint256 trailingId = activeTrailings[j];
                 TrailingInfo storage trailing = trailingInfoById[trailingId];
                 int24 oldTick = trailing.tickLower;

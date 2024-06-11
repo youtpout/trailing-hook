@@ -250,6 +250,7 @@ contract TrailingStopTest is Test, Deployers {
 
     function testExecuteTrailing() public {
         address token0 = Currency.unwrap(currency0);
+        address token1 = Currency.unwrap(currency1);
         deal(token0, bob, 1 ether);
 
         uint24 onePercent = 10_000;
@@ -282,6 +283,81 @@ contract TrailingStopTest is Test, Deployers {
         );
 
         zeroForOne = false;
+        amountSpecified = -2e18; // negative number indicates exact input swap!
+        swapDelta = swap(key, zeroForOne, amountSpecified, ZERO_BYTES);
+
+        // we can't cancel this hook because it was executed
+        vm.startPrank(bob);
+        vm.expectRevert(
+            abi.encodeWithSelector(TrailingStopHook.AlreadyExecuted.selector, 1)
+        );
+        trailingHook.removeTrailing(1);
+
+        // user claim his money
+        trailingHook.claim(1);
+        vm.stopPrank();
+        uint256 balance1 = IERC20(token1).balanceOf(bob);
+        uint256 balance = trailingHook.balanceOf(bob, trailingId);
+        assertEq(0, balance);
+        assertGt(balance1, 0.4 ether);
+
+        // check trailing was deleted from the mapping
+        uint256 amount = trailingHook.trailingPositions(
+            poolId,
+            tickLower,
+            true
+        );
+        uint256 activeLength = trailingHook.countActiveTrailingByPercent(
+            poolId,
+            onePercent,
+            true
+        );
+
+        uint256 tickLength = trailingHook.countTrailingByTicks(
+            poolId,
+            tickLower,
+            true
+        );
+        assertEq(0, amount);
+        assertEq(0, activeLength);
+        assertEq(0, tickLength);
+    }
+
+    function testExecuteTrailingInversed() public {
+        address token1 = Currency.unwrap(currency1);
+        address token0 = Currency.unwrap(currency0);
+        deal(token1, bob, 1 ether);
+
+        uint24 onePercent = 10_000;
+
+        //trailingHook.trailingPositions(poolId,)
+        (, int24 tickSlot, , ) = StateLibrary.getSlot0(manager, key.toId());
+        int24 tickPercent = tickSlot + ((100 * int24(onePercent)) / 10_000);
+        int24 tickLower = getTickLower(tickPercent, key.tickSpacing);
+
+        vm.startPrank(bob);
+        IERC20(token1).approve(address(trailingHook), 1 ether);
+        // 10_000 for 1%
+        (int24 tickTrailing, uint256 trailingId) = trailingHook.placeTrailing(
+            key,
+            onePercent,
+            0.5 ether,
+            false
+        );
+        vm.stopPrank();
+
+        // the trailing is executed in inverse order for security reason (avoids abuse/attack vectors)
+
+        bool zeroForOne = false;
+        int256 amountSpecified = -2e18; // negative number indicates exact input swap!
+        BalanceDelta swapDelta = swap(
+            key,
+            zeroForOne,
+            amountSpecified,
+            ZERO_BYTES
+        );
+
+        zeroForOne = true;
         amountSpecified = -2e18; // negative number indicates exact input swap!
         swapDelta = swap(key, zeroForOne, amountSpecified, ZERO_BYTES);
 
@@ -435,6 +511,52 @@ contract TrailingStopTest is Test, Deployers {
         assertEq(1, activeLength);
         assertEq(1, tickLength);
         assertEq(trailingHook.lastTokenId(), 1);
+    }
+
+    function testMultipleExcutionTrailing() public {
+        address token0 = Currency.unwrap(currency0);
+        address token1 = Currency.unwrap(currency1);
+        deal(token0, bob, 1 ether);
+        deal(token1, alice, 1 ether);
+
+        uint24 onePercent = 10_000;
+        uint24 fivePercent = 50_000;
+
+        //trailingHook.trailingPositions(poolId,)
+        (, int24 tickSlot, , ) = StateLibrary.getSlot0(manager, key.toId());
+        int24 tickPercent = tickSlot - ((100 * int24(onePercent)) / 10_000);
+        int24 tickLower = getTickLower(tickPercent, key.tickSpacing);
+
+        int24 tickPercent5 = tickSlot - ((100 * int24(fivePercent)) / 10_000);
+        int24 tickLower5 = getTickLower(tickPercent5, key.tickSpacing);
+
+        vm.startPrank(bob);
+        IERC20(token0).approve(address(trailingHook), 1 ether);
+        // 10_000 for 1%
+        trailingHook.placeTrailing(key, onePercent, 0.5 ether, true);
+        trailingHook.placeTrailing(key, fivePercent, 0.3 ether, true);
+        vm.stopPrank();
+
+        vm.startPrank(alice);
+        IERC20(token1).approve(address(trailingHook), 1 ether);
+        // 10_000 for 1%
+        trailingHook.placeTrailing(key, onePercent, 0.5 ether, false);
+        trailingHook.placeTrailing(key, fivePercent, 0.3 ether, false);
+        vm.stopPrank();
+
+        // swap to execute it
+        bool zeroForOne = true;
+        int256 amountSpecified = -2e18; // negative number indicates exact input swap!
+        BalanceDelta swapDelta = swap(
+            key,
+            zeroForOne,
+            amountSpecified,
+            ZERO_BYTES
+        );
+
+        zeroForOne = false;
+        amountSpecified = -2e18; // negative number indicates exact input swap!
+        swapDelta = swap(key, zeroForOne, amountSpecified, ZERO_BYTES);
     }
 
     function getTickLower(
